@@ -39,8 +39,10 @@ jobs:
           touch .env
           mkdir -p assets/icons assets/images
 
-      - name: Install Dependencies
-        run: flutter pub get
+      - name: Fix Dependencies & Upgrade Carousel
+        run: |
+          flutter pub add carousel_slider:^5.0.0
+          flutter pub get
 
       - name: Build APK
         run: flutter build apk --debug
