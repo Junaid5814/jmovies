@@ -32,6 +32,13 @@ jobs:
         with:
           channel: 'stable'
 
+      - name: Recreate Clean Android Project
+        run: |
+          rm -rf android
+          flutter create . --platforms=android --org com.jmovies.app
+          touch .env
+          mkdir -p assets/icons assets/images
+
       - name: Install Dependencies
         run: flutter pub get
 
@@ -43,3 +50,4 @@ jobs:
         with:
           name: jmovies-apk
           path: build/app/outputs/flutter-apk/*.apk
+          
