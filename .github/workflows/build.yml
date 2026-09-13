@@ -39,9 +39,10 @@ jobs:
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
           cat << 'EOF' > .env
-          TMDB_API_KEY=2dca580c2a14b55200e784d157207b4d
-          API_KEY=2dca580c2a14b55200e784d157207b4d
-          TMDB_KEY=2dca580c2a14b55200e784d157207b4d
+          TMDB_API_KEY=75509b000dc883c256e0c2de5d700731
+          API_KEY=75509b000dc883c256e0c2de5d700731
+          TMDB_KEY=75509b000dc883c256e0c2de5d700731
+          TMDB_READ_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3NTUwOWIwMDBkYzg4M2MyNTZlMGMyZGU1ZDcwMDczMSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.WwbQQKw8Lyq2fUkg-QvDzPSBoOtefx9Vb7llwfD_-_c
           BASE_URL=https://api.themoviedb.org/3
           IMAGE_BASE_URL=https://image.tmdb.org/t/p/w500
           EOF
