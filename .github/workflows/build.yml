@@ -44,6 +44,25 @@ jobs:
           flutter pub add carousel_slider:^5.0.0
           flutter pub get
 
+      - name: Patch Plugins to Android SDK 34
+        run: |
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
+          if [ -f "android/build.gradle" ]; then
+            cat << 'EOF' >> android/build.gradle
+
+          subprojects {
+              afterEvaluate { project ->
+                  if (project.hasProperty('android')) {
+                      project.android {
+                          compileSdkVersion 34
+                      }
+                  }
+              }
+          }
+          EOF
+          fi
+
       - name: Build APK
         run: flutter build apk --debug
 
@@ -52,4 +71,3 @@ jobs:
         with:
           name: jmovies-apk
           path: build/app/outputs/flutter-apk/*.apk
-          
