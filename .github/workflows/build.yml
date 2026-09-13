@@ -52,12 +52,14 @@ jobs:
           TOKEN="${TMDB_SECRET:-eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4}"
 
           cat << EOF > .env
+          TMDB_ACCESS_TOKEN=$TOKEN
+          TMDB_READ_TOKEN=$TOKEN
+          TMDB_TOKEN=$TOKEN
+          ACCESS_TOKEN=$TOKEN
+          TOKEN=$TOKEN
           TMDB_API_KEY=$KEY
           API_KEY=$KEY
           TMDB_KEY=$KEY
-          TMDB_READ_TOKEN=$TOKEN
-          TMDB_TOKEN=$TOKEN
-          TMDB_ACCESS_TOKEN=$TOKEN
           BASE_URL=https://api.themoviedb.org/3
           IMAGE_BASE_URL=https://image.tmdb.org/t/p/w500
           EOF
@@ -68,40 +70,60 @@ jobs:
             sed -i '/flutter:/a \  assets:\n    - .env\n    - assets/\n    - assets/images/\n    - assets/icons/' pubspec.yaml
           fi
 
-      - name: Inject Secret and Key into Dart Code
+      - name: Smart Key and Bearer Token Injection
         env:
           TMDB_SECRET: ${{ secrets.TMDB_READ_TOKEN }}
         run: |
-          KEY="dac07662083decf2616c4e68d22342c9"
-          TOKEN="${TMDB_SECRET:-eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4}"
+          export KEY="dac07662083decf2616c4e68d22342c9"
+          export TOKEN="${TMDB_SECRET:-eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4}"
 
-          python3 -c "
+          python3 - << 'EOF'
           import os, re
-          key = '$KEY'
-          token = '$TOKEN'
 
-          for root, _, files in os.walk('lib'):
+          key = os.environ.get("KEY", "")
+          token = os.environ.get("TOKEN", "")
+
+          for root, _, files in os.walk("lib"):
               for f in files:
-                  if f.endswith('.dart'):
+                  if f.endswith(".dart"):
                       p = os.path.join(root, f)
-                      with open(p, 'r', encoding='utf-8', errors='ignore') as file:
-                          c = file.read()
+                      with open(p, "r", encoding="utf-8", errors="ignore") as file:
+                          content = file.read()
 
-                      c = c.replace('YOUR_TMDB_API_KEY', key).replace('YOUR_API_KEY', key).replace('your_api_key_here', key)
-                      c = c.replace('YOUR_READ_ACCESS_TOKEN', token).replace('YOUR_TOKEN', token)
+                      # Dotenv mapping
+                      def replace_dotenv(m):
+                          var = m.group(1).upper()
+                          if "TOKEN" in var or "AUTH" in var:
+                              return f"'{token}'"
+                          return f"'{key}'"
 
-                      # Direct key replacements
-                      c = re.sub(r'dotenv\.env\[[\'\"][^\'\"]*[\'\"]\]', f\"'{key}'\", c)
-                      c = re.sub(r'dotenv\.get\([\'\"][^\'\"]*[\'\"][^)]*\)', f\"'{key}'\", c)
-                      c = re.sub(r'([a-zA-Z0-9_]*token[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', rf\"\g<1>'{token}'\", c, flags=re.IGNORECASE)
-                      c = re.sub(r'([a-zA-Z0-9_]*apiKey[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', rf\"\g<1>'{key}'\", c, flags=re.IGNORECASE)
+                      content = re.sub(r"dotenv\.(?:env\[|get\()[\'\"]([^\'\"]+)[\'\"](?:\]|\))", replace_dotenv, content)
 
-                      # Slow net timeout fix (60s)
-                      c = re.sub(r'Duration\(\s*seconds\s*:\s*[0-9]+\s*\)', 'Duration(seconds: 60)', c)
+                      # Placeholders
+                      content = content.replace("YOUR_TMDB_API_KEY", key).replace("YOUR_API_KEY", key).replace("your_api_key_here", key)
+                      content = content.replace("YOUR_READ_ACCESS_TOKEN", token).replace("YOUR_ACCESS_TOKEN", token).replace("YOUR_TOKEN", token)
 
-                      with open(p, 'w', encoding='utf-8') as file:
-                          file.write(c)
-          "
+                      # Variables
+                      content = re.sub(r'([a-zA-Z0-9_]*token[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', rf"\g<1>'{token}'", content, flags=re.IGNORECASE)
+                      content = re.sub(r'([a-zA-Z0-9_]*bearer[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', rf"\g<1>'{token}'", content, flags=re.IGNORECASE)
+
+                      def replace_key(m):
+                          var = m.group(1)
+                          if "token" in var.lower():
+                              return f"{var}'{token}'"
+                          return f"{var}'{key}'"
+
+                      content = re.sub(r'([a-zA-Z0-9_]*key[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', replace_key, content, flags=re.IGNORECASE)
+
+                      # Fix Bearer header
+                      content = content.replace(f"Bearer {key}", f"Bearer {token}")
+
+                      # Slow net timeout (60s)
+                      content = re.sub(r'Duration\(\s*seconds\s*:\s*[0-9]+\s*\)', 'Duration(seconds: 60)', content)
+
+                      with open(p, "w", encoding="utf-8") as file:
+                          file.write(content)
+          EOF
 
       - name: Patch Plugins to Android SDK 34
         run: |
@@ -123,10 +145,7 @@ jobs:
           fi
 
       - name: Build APK
-        run: |
-          flutter build apk --release \
-            --dart-define=TMDB_API_KEY=dac07662083decf2616c4e68d22342c9 \
-            --dart-define=API_KEY=dac07662083decf2616c4e68d22342c9
+        run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
