@@ -21,23 +21,6 @@ jobs:
             fi
           fi
 
-      - name: Find Fake Video File
-        run: |
-          echo "=== 1. SEARCHING FOR GETSTREAMBUNDLE ==="
-          grep -rn "getStreamBundle" lib/ || true
-          
-          echo "=== 2. SEARCHING FOR STREAM URLS (M3U8 / MP4) ==="
-          grep -rnE "https?://[^\"]+\.(m3u8|mp4)" lib/ || true
-          
-          echo "=== 3. PRINTING IMPLEMENTATION FILES ==="
-          FILES=$(grep -rl "getStreamBundle" lib/ || true)
-          for f in $FILES; do
-            echo "======================================"
-            echo "FILE: $f"
-            echo "======================================"
-            cat "$f"
-          done
-
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -54,11 +37,12 @@ jobs:
           rm -rf android
           flutter create . --platforms=android --org com.jmovies.app
           mkdir -p assets/icons assets/images
-          sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
+          sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
-      - name: Fix Carousel Slider Version 5
+      - name: Add Dependencies (Carousel and WebView)
         run: |
           flutter pub add carousel_slider:^5.0.0
+          flutter pub add webview_flutter
           flutter pub get
 
       - name: Setup Tokens & .env File
@@ -134,6 +118,253 @@ jobs:
 
                       with open(p, "w", encoding="utf-8") as file:
                           file.write(content)
+          EOF
+
+      - name: Inject Live WebView Streaming Player
+        run: |
+          cat << 'EOF' > lib/screens/player/player_screen.dart
+          import 'dart:async';
+          import 'package:flutter/material.dart';
+          import 'package:flutter/services.dart';
+          import 'package:wakelock_plus/wakelock_plus.dart';
+          import 'package:webview_flutter/webview_flutter.dart';
+          import '../../data/models/movie_model.dart';
+
+          class PlayerScreen extends StatefulWidget {
+            final Movie movie;
+            const PlayerScreen({super.key, required this.movie});
+
+            @override
+            State<PlayerScreen> createState() => _PlayerScreenState();
+          }
+
+          class _PlayerScreenState extends State<PlayerScreen> {
+            late final WebViewController _controller;
+            bool _isLoading = true;
+            int _currentServerIndex = 0;
+
+            late final List<Map<String, String>> _servers;
+
+            @override
+            void initState() {
+              super.initState();
+              SystemChrome.setPreferredOrientations([
+                DeviceOrientation.landscapeLeft,
+                DeviceOrientation.landscapeRight,
+              ]);
+              SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+              WakelockPlus.enable();
+
+              final id = widget.movie.id;
+              _servers = [
+                {
+                  'name': 'Server Alpha (AutoEmbed)',
+                  'url': 'https://player.autoembed.cc/embed/movie/$id',
+                },
+                {
+                  'name': 'Server Beta (VidLink)',
+                  'url': 'https://vidlink.pro/movie/$id',
+                },
+                {
+                  'name': 'Server Gamma (VidSrc)',
+                  'url': 'https://vidsrc.cc/v2/embed/movie/$id',
+                },
+                {
+                  'name': 'Server Delta (MultiEmbed)',
+                  'url': 'https://multiembed.mov/?video_id=$id&tmdb=1',
+                },
+              ];
+
+              _initWebView();
+            }
+
+            void _initWebView() {
+              _controller = WebViewController()
+                ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..setBackgroundColor(Colors.black)
+                ..setNavigationDelegate(
+                  NavigationDelegate(
+                    onPageStarted: (String url) {
+                      if (mounted) setState(() => _isLoading = true);
+                    },
+                    onPageFinished: (String url) {
+                      if (mounted) setState(() => _isLoading = false);
+                    },
+                    onNavigationRequest: (NavigationRequest request) {
+                      final url = request.url.toLowerCase();
+                      if (url.startsWith('blob:') ||
+                          url.startsWith('about:') ||
+                          url.contains('autoembed') ||
+                          url.contains('vidlink') ||
+                          url.contains('vidsrc') ||
+                          url.contains('multiembed') ||
+                          url.contains('embed') ||
+                          url.contains('stream') ||
+                          url.contains('m3u8') ||
+                          url.contains('mp4') ||
+                          url.contains('cloud') ||
+                          url.contains('player')) {
+                        return NavigationDecision.navigate;
+                      }
+                      return NavigationDecision.prevent;
+                    },
+                  ),
+                )
+                ..loadRequest(Uri.parse(_servers[_currentServerIndex]['url']!));
+            }
+
+            void _switchServer(int index) {
+              if (index == _currentServerIndex) return;
+              setState(() {
+                _currentServerIndex = index;
+                _isLoading = true;
+              });
+              _controller.loadRequest(Uri.parse(_servers[index]['url']!));
+            }
+
+            void _showServerSheet() {
+              showModalBottomSheet(
+                context: context,
+                backgroundColor: const Color(0xFF1E1E1E),
+                shape: const RoundedRectangleBorder(
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+                ),
+                builder: (context) {
+                  return SafeArea(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Text(
+                            'Select Server',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        ..._servers.asMap().entries.map((entry) {
+                          final idx = entry.key;
+                          final server = entry.value;
+                          final isSelected = idx == _currentServerIndex;
+                          return ListTile(
+                            leading: Icon(
+                              isSelected ? Icons.play_circle_fill : Icons.dns_rounded,
+                              color: isSelected ? Colors.redAccent : Colors.white70,
+                            ),
+                            title: Text(
+                              server['name']!,
+                              style: TextStyle(
+                                color: isSelected ? Colors.redAccent : Colors.white,
+                                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                              ),
+                            ),
+                            trailing: isSelected
+                                ? const Icon(Icons.check, color: Colors.redAccent)
+                                : null,
+                            onTap: () {
+                              Navigator.pop(context);
+                              _switchServer(idx);
+                            },
+                          );
+                        }),
+                        const SizedBox(height: 12),
+                      ],
+                    ),
+                  );
+                },
+              );
+            }
+
+            @override
+            void dispose() {
+              SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+              SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+              WakelockPlus.disable();
+              super.dispose();
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                backgroundColor: Colors.black,
+                body: SafeArea(
+                  child: Stack(
+                    children: [
+                      WebViewWidget(controller: _controller),
+                      if (_isLoading)
+                        Container(
+                          color: Colors.black,
+                          child: Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const CircularProgressIndicator(color: Colors.redAccent),
+                                const SizedBox(height: 16),
+                                Text(
+                                  'Connecting to stream (${_servers[_currentServerIndex]['name']})...',
+                                  style: const TextStyle(color: Colors.white70, fontSize: 14),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      Positioned(
+                        top: 12,
+                        left: 12,
+                        right: 12,
+                        child: Row(
+                          children: [
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.65),
+                                shape: BoxShape.circle,
+                              ),
+                              child: IconButton(
+                                icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
+                                onPressed: () => Navigator.pop(context),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                widget.movie.title,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  shadows: [
+                                    Shadow(blurRadius: 4, color: Colors.black),
+                                  ],
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.65),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: TextButton.icon(
+                                onPressed: _showServerSheet,
+                                icon: const Icon(Icons.dns_rounded, color: Colors.white, size: 16),
+                                label: Text(
+                                  'Server ${_currentServerIndex + 1}',
+                                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
           EOF
 
       - name: Patch Plugins to Android SDK 34
