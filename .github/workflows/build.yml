@@ -11,12 +11,20 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Extract ZIP
+      - name: Smart Extract Any ZIP or Folder
         run: |
-          unzip -o jmovies.zip
+          # Find any zip file in repository regardless of name or case
+          ZIP_FILE=$(find . -maxdepth 2 -iname "*.zip" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Found zip file: $ZIP_FILE. Extracting..."
+            unzip -o "$ZIP_FILE"
+          fi
+
+          # Ensure project root contains pubspec.yaml
           if [ ! -f "pubspec.yaml" ]; then
-            DIR=$(find . -maxdepth 2 -name "pubspec.yaml" -exec dirname {} \;)
+            DIR=$(find . -maxdepth 3 -name "pubspec.yaml" -exec dirname {} \; | head -n 1)
             if [ -n "$DIR" ]; then
+              echo "Moving project files from $DIR to root..."
               cp -r $DIR/* .
             fi
           fi
@@ -39,7 +47,7 @@ jobs:
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
-      - name: Add Dependencies (Carousel and WebView)
+      - name: Add Dependencies
         run: |
           flutter pub add carousel_slider:^5.0.0
           flutter pub add webview_flutter
@@ -120,7 +128,7 @@ jobs:
                           file.write(content)
           EOF
 
-      - name: Inject Live WebView Streaming Player
+      - name: Inject Universal Player (Movies, Series & Anime)
         run: |
           cat << 'EOF' > lib/screens/player/player_screen.dart
           import 'dart:async';
@@ -131,8 +139,35 @@ jobs:
           import '../../data/models/movie_model.dart';
 
           class PlayerScreen extends StatefulWidget {
-            final Movie movie;
-            const PlayerScreen({super.key, required this.movie});
+            final Movie? movie;
+            final int? tmdbId;
+            final String? title;
+            final bool isTv;
+            final int? seasonNumber;
+            final int? episodeNumber;
+
+            const PlayerScreen({
+              super.key,
+              this.movie,
+              this.tmdbId,
+              this.title,
+              this.isTv = false,
+              this.seasonNumber,
+              this.episodeNumber,
+            });
+
+            const PlayerScreen.forEpisode({
+              super.key,
+              required int tmdbId,
+              required String title,
+              required int seasonNumber,
+              required int episodeNumber,
+              this.movie,
+            })  : tmdbId = tmdbId,
+                  title = title,
+                  isTv = true,
+                  seasonNumber = seasonNumber,
+                  episodeNumber = episodeNumber;
 
             @override
             State<PlayerScreen> createState() => _PlayerScreenState();
@@ -142,8 +177,10 @@ jobs:
             late final WebViewController _controller;
             bool _isLoading = true;
             int _currentServerIndex = 0;
-
             late final List<Map<String, String>> _servers;
+
+            int get _resolvedId => widget.tmdbId ?? widget.movie?.id ?? 0;
+            String get _resolvedTitle => widget.title ?? widget.movie?.title ?? 'Stream';
 
             @override
             void initState() {
@@ -155,25 +192,41 @@ jobs:
               SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
               WakelockPlus.enable();
 
-              final id = widget.movie.id;
-              _servers = [
-                {
-                  'name': 'Server Alpha (AutoEmbed)',
-                  'url': 'https://player.autoembed.cc/embed/movie/$id',
-                },
-                {
-                  'name': 'Server Beta (VidLink)',
-                  'url': 'https://vidlink.pro/movie/$id',
-                },
-                {
-                  'name': 'Server Gamma (VidSrc)',
-                  'url': 'https://vidsrc.cc/v2/embed/movie/$id',
-                },
-                {
-                  'name': 'Server Delta (MultiEmbed)',
-                  'url': 'https://multiembed.mov/?video_id=$id&tmdb=1',
-                },
-              ];
+              final id = _resolvedId;
+              final s = widget.seasonNumber ?? 1;
+              final e = widget.episodeNumber ?? 1;
+
+              if (widget.isTv) {
+                _servers = [
+                  {
+                    'name': 'Server Alpha (VidLink)',
+                    'url': 'https://vidlink.pro/tv/$id/$s/$e',
+                  },
+                  {
+                    'name': 'Server Beta (MultiEmbed - Regional)',
+                    'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e',
+                  },
+                  {
+                    'name': 'Server Gamma (VidSrc)',
+                    'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e',
+                  },
+                ];
+              } else {
+                _servers = [
+                  {
+                    'name': 'Server Alpha (VidLink)',
+                    'url': 'https://vidlink.pro/movie/$id',
+                  },
+                  {
+                    'name': 'Server Beta (MultiEmbed - Hindi/Regional)',
+                    'url': 'https://multiembed.mov/?video_id=$id&tmdb=1',
+                  },
+                  {
+                    'name': 'Server Gamma (VidSrc)',
+                    'url': 'https://vidsrc.cc/v2/embed/movie/$id',
+                  },
+                ];
+              }
 
               _initWebView();
             }
@@ -194,15 +247,13 @@ jobs:
                       final url = request.url.toLowerCase();
                       if (url.startsWith('blob:') ||
                           url.startsWith('about:') ||
-                          url.contains('autoembed') ||
                           url.contains('vidlink') ||
-                          url.contains('vidsrc') ||
                           url.contains('multiembed') ||
+                          url.contains('vidsrc') ||
                           url.contains('embed') ||
                           url.contains('stream') ||
                           url.contains('m3u8') ||
                           url.contains('mp4') ||
-                          url.contains('cloud') ||
                           url.contains('player')) {
                         return NavigationDecision.navigate;
                       }
@@ -288,6 +339,10 @@ jobs:
 
             @override
             Widget build(BuildContext context) {
+              final headerTitle = widget.isTv && widget.seasonNumber != null && widget.episodeNumber != null
+                  ? '$_resolvedTitle (S${widget.seasonNumber}E${widget.episodeNumber})'
+                  : _resolvedTitle;
+
               return Scaffold(
                 backgroundColor: Colors.black,
                 body: SafeArea(
@@ -330,7 +385,7 @@ jobs:
                             const SizedBox(width: 12),
                             Expanded(
                               child: Text(
-                                widget.movie.title,
+                                headerTitle,
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 16,
