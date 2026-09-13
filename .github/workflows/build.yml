@@ -23,14 +23,20 @@ jobs:
 
       - name: Find Fake Video File
         run: |
-          echo "=== SEARCH RESULT ==="
-          FILE=$(grep -rl "Server Alpha" lib/ || true)
-          echo "Found in: $FILE"
-          if [ -n "$FILE" ]; then
-            cat "$FILE"
-          else
-            grep -rn "m3u8" lib/ || true
-          fi
+          echo "=== 1. SEARCHING FOR GETSTREAMBUNDLE ==="
+          grep -rn "getStreamBundle" lib/ || true
+          
+          echo "=== 2. SEARCHING FOR STREAM URLS (M3U8 / MP4) ==="
+          grep -rnE "https?://[^\"]+\.(m3u8|mp4)" lib/ || true
+          
+          echo "=== 3. PRINTING IMPLEMENTATION FILES ==="
+          FILES=$(grep -rl "getStreamBundle" lib/ || true)
+          for f in $FILES; do
+            echo "======================================"
+            echo "FILE: $f"
+            echo "======================================"
+            cat "$f"
+          done
 
       - name: Setup Java
         uses: actions/setup-java@v4
