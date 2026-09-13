@@ -18,14 +18,12 @@ jobs:
           echo "=== ALL FILES IN REPO ==="
           ls -la
 
-          # Pick the zip file modified or added in the most recent commit
           LATEST_ZIP=$(git log -n 10 --name-only --pretty="" | grep -i "\.zip$" | head -n 1 | tr -d '\r' | tr -d ' ')
 
           if [ -n "$LATEST_ZIP" ] && [ -f "$LATEST_ZIP" ]; then
             echo "Extracting newest committed zip: $LATEST_ZIP"
             unzip -o "$LATEST_ZIP"
           else
-            # Fallback to Jmovies.zip (case-insensitive)
             FALLBACK_ZIP=$(find . -maxdepth 2 -iname "*jmovies*.zip" | sort -r | head -n 1)
             echo "Extracting fallback: $FALLBACK_ZIP"
             unzip -o "$FALLBACK_ZIP"
@@ -435,10 +433,11 @@ jobs:
           }
           EOF
 
-      - name: Patch Plugins to Android SDK 34
+      - name: Patch Plugins (SDK 34 & Proguard Fix)
         run: |
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
           if [ -f "android/build.gradle" ]; then
             cat << 'EOF' >> android/build.gradle
 
