@@ -38,14 +38,6 @@ jobs:
           flutter create . --platforms=android --org com.jmovies.app
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
-          cat << 'EOF' > .env
-          TMDB_API_KEY=75509b000dc883c256e0c2de5d700731
-          API_KEY=75509b000dc883c256e0c2de5d700731
-          TMDB_KEY=75509b000dc883c256e0c2de5d700731
-          TMDB_READ_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3NTUwOWIwMDBkYzg4M2MyNTZlMGMyZGU1ZDcwMDczMSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.WwbQQKw8Lyq2fUkg-QvDzPSBoOtefx9Vb7llwfD_-_c
-          BASE_URL=https://api.themoviedb.org/3
-          IMAGE_BASE_URL=https://image.tmdb.org/t/p/w500
-          EOF
 
       - name: Fix Dependencies & Upgrade Carousel
         run: |
@@ -71,12 +63,36 @@ jobs:
           EOF
           fi
 
+      - name: Inject TMDB Key Everywhere
+        run: |
+          KEY="75509b000dc883c256e0c2de5d700731"
+          TOKEN="eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3NTUwOWIwMDBkYzg4M2MyNTZlMGMyZGU1ZDcwMDczMSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.WwbQQKw8Lyq2fUkg-QvDzPSBoOtefx9Vb7llwfD_-_c"
+
+          find lib -type f -name "*.dart" -exec sed -i "s/YOUR_TMDB_API_KEY/$KEY/g" {} + 2>/dev/null || true
+          find lib -type f -name "*.dart" -exec sed -i "s/YOUR_API_KEY/$KEY/g" {} + 2>/dev/null || true
+          find lib -type f -name "*.dart" -exec sed -i "s/your_api_key_here/$KEY/g" {} + 2>/dev/null || true
+          find lib -type f -name "*.dart" -exec sed -i "s/YOUR_ACCESS_TOKEN/$TOKEN/g" {} + 2>/dev/null || true
+          find lib -type f -name "*.dart" -exec sed -i -E "s/(apiKey|api_key|tmdbApiKey|tmdbKey)[ ]*=[ ]*['\"][^'\"]*['\"]/\1 = '$KEY'/g" {} + 2>/dev/null || true
+
+          cat << EOF > .env
+          TMDB_API_KEY=$KEY
+          API_KEY=$KEY
+          TMDB_KEY=$KEY
+          TMDB_READ_TOKEN=$TOKEN
+          BASE_URL=https://api.themoviedb.org/3
+          IMAGE_BASE_URL=https://image.tmdb.org/t/p/w500
+          EOF
+          cp .env assets/.env 2>/dev/null || true
+
       - name: Build APK
-        run: flutter build apk --release
+        run: |
+          flutter build apk --release \
+            --dart-define=TMDB_API_KEY=75509b000dc883c256e0c2de5d700731 \
+            --dart-define=API_KEY=75509b000dc883c256e0c2de5d700731 \
+            --dart-define=TMDB_KEY=75509b000dc883c256e0c2de5d700731
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: jmovies-apk
           path: build/app/outputs/flutter-apk/*.apk
-          
