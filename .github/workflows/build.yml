@@ -39,29 +39,40 @@ jobs:
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
 
-      - name: Configure .env and Assets
+      - name: Setup Tokens & .env File
+        env:
+          TMDB_SECRET: ${{ secrets.TMDB_READ_TOKEN }}
         run: |
-          KEY="75509b000dc883c256e0c2de5d700731"
-          TOKEN="eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3NTUwOWIwMDBkYzg4M2MyNTZlMGMyZGU1ZDcwMDczMSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.WwbQQKw8Lyq2fUkg-QvDzPSBoOtefx9Vb7llwfD_-_c"
+          KEY="dac07662083decf2616c4e68d22342c9"
+          TOKEN="${TMDB_SECRET:-eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4}"
+
           cat << EOF > .env
           TMDB_API_KEY=$KEY
           API_KEY=$KEY
           TMDB_KEY=$KEY
           TMDB_READ_TOKEN=$TOKEN
+          TMDB_TOKEN=$TOKEN
           BASE_URL=https://api.themoviedb.org/3
           IMAGE_BASE_URL=https://image.tmdb.org/t/p/w500
           EOF
+
           cp .env assets/.env
+
           if ! grep -q "\.env" pubspec.yaml; then
             sed -i '/flutter:/a \  assets:\n    - .env\n    - assets/\n    - assets/images/\n    - assets/icons/' pubspec.yaml
           fi
 
-      - name: Fix Slow Internet, Timeouts & Permanent Key Injection
+      - name: Inject Secret and Key into Dart Code
+        env:
+          TMDB_SECRET: ${{ secrets.TMDB_READ_TOKEN }}
         run: |
+          KEY="dac07662083decf2616c4e68d22342c9"
+          TOKEN="${TMDB_SECRET:-eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4}"
+
           python3 -c "
           import os, re
-
-          key = '75509b000dc883c256e0c2de5d700731'
+          key = '$KEY'
+          token = '$TOKEN'
 
           for root, _, files in os.walk('lib'):
               for f in files:
@@ -70,18 +81,16 @@ jobs:
                       with open(p, 'r', encoding='utf-8', errors='ignore') as file:
                           c = file.read()
 
-                      # Dotenv ki bajaye direct key replace karein
+                      c = c.replace('YOUR_TMDB_API_KEY', key).replace('YOUR_API_KEY', key).replace('your_api_key_here', key)
+                      c = c.replace('YOUR_READ_ACCESS_TOKEN', token).replace('YOUR_TOKEN', token)
+
+                      # Direct key replacements
                       c = re.sub(r'dotenv\.env\[[\'\"][^\'\"]*[\'\"]\]', f\"'{key}'\", c)
                       c = re.sub(r'dotenv\.get\([\'\"][^\'\"]*[\'\"][^)]*\)', f\"'{key}'\", c)
-
-                      # Saari placeholder keys replace karein
-                      c = c.replace('YOUR_TMDB_API_KEY', key).replace('YOUR_API_KEY', key).replace('your_api_key_here', key)
-
-                      # Variables mein key pakki karein
+                      c = re.sub(r'([a-zA-Z0-9_]*token[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', rf\"\g<1>'{token}'\", c, flags=re.IGNORECASE)
                       c = re.sub(r'([a-zA-Z0-9_]*apiKey[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', rf\"\g<1>'{key}'\", c, flags=re.IGNORECASE)
-                      c = re.sub(r'([a-zA-Z0-9_]*tmdbKey[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', rf\"\g<1>'{key}'\", c, flags=re.IGNORECASE)
 
-                      # Slow internet ke liye timeout 60 seconds karein
+                      # Slow net timeout fix (60s)
                       c = re.sub(r'Duration\(\s*seconds\s*:\s*[0-9]+\s*\)', 'Duration(seconds: 60)', c)
 
                       with open(p, 'w', encoding='utf-8') as file:
@@ -115,13 +124,11 @@ jobs:
       - name: Build APK
         run: |
           flutter build apk --release \
-            --dart-define=TMDB_API_KEY=75509b000dc883c256e0c2de5d700731 \
-            --dart-define=API_KEY=75509b000dc883c256e0c2de5d700731 \
-            --dart-define=TMDB_KEY=75509b000dc883c256e0c2de5d700731
+            --dart-define=TMDB_API_KEY=dac07662083decf2616c4e68d22342c9 \
+            --dart-define=API_KEY=dac07662083decf2616c4e68d22342c9
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: jmovies-apk
           path: build/app/outputs/flutter-apk/*.apk
-          
