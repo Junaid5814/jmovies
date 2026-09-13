@@ -21,6 +21,17 @@ jobs:
             fi
           fi
 
+      - name: Find Fake Video File
+        run: |
+          echo "=== SEARCH RESULT ==="
+          FILE=$(grep -rl "Server Alpha" lib/ || true)
+          echo "Found in: $FILE"
+          if [ -n "$FILE" ]; then
+            cat "$FILE"
+          else
+            grep -rn "m3u8" lib/ || true
+          fi
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -90,7 +101,6 @@ jobs:
                       with open(p, "r", encoding="utf-8", errors="ignore") as file:
                           content = file.read()
 
-                      # Dotenv mapping
                       def replace_dotenv(m):
                           var = m.group(1).upper()
                           if "TOKEN" in var or "AUTH" in var:
@@ -99,11 +109,9 @@ jobs:
 
                       content = re.sub(r"dotenv\.(?:env\[|get\()[\'\"]([^\'\"]+)[\'\"](?:\]|\))", replace_dotenv, content)
 
-                      # Placeholders
                       content = content.replace("YOUR_TMDB_API_KEY", key).replace("YOUR_API_KEY", key).replace("your_api_key_here", key)
                       content = content.replace("YOUR_READ_ACCESS_TOKEN", token).replace("YOUR_ACCESS_TOKEN", token).replace("YOUR_TOKEN", token)
 
-                      # Variables
                       content = re.sub(r'([a-zA-Z0-9_]*token[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', rf"\g<1>'{token}'", content, flags=re.IGNORECASE)
                       content = re.sub(r'([a-zA-Z0-9_]*bearer[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', rf"\g<1>'{token}'", content, flags=re.IGNORECASE)
 
@@ -115,10 +123,7 @@ jobs:
 
                       content = re.sub(r'([a-zA-Z0-9_]*key[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', replace_key, content, flags=re.IGNORECASE)
 
-                      # Fix Bearer header
                       content = content.replace(f"Bearer {key}", f"Bearer {token}")
-
-                      # Slow net timeout (60s)
                       content = re.sub(r'Duration\(\s*seconds\s*:\s*[0-9]+\s*\)', 'Duration(seconds: 60)', content)
 
                       with open(p, "w", encoding="utf-8") as file:
@@ -152,4 +157,3 @@ jobs:
         with:
           name: jmovies-apk
           path: build/app/outputs/flutter-apk/*.apk
-          
