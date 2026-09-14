@@ -55,18 +55,47 @@ jobs:
           EOF
           cp .env assets/.env 2>/dev/null || true
 
-      - name: Inject Branding (Powered by Junaid Javed)
+      - name: Inject Branding Safely
         run: |
           python3 - << 'EOF'
           import os, re
+
+          branding = """Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: const [
+              Text('Jmovies', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+              Text('POWERED BY JUNAID JAVED', style: TextStyle(color: Colors.redAccent, fontSize: 8.5, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
+            ],
+          )"""
+
           for r, _, fs in os.walk('lib'):
             for f in fs:
               if f.endswith('.dart'):
                 p = os.path.join(r, f)
-                with open(p, 'r') as fl: t = fl.read()
-                t = re.sub(r'const\s+Text\(\s*[\'\"]J[mM]ovies[\'\"][^)]*\)', "Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: const [Text('Jmovies', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)), Text('POWERED BY JUNAID JAVED', style: TextStyle(color: Colors.redAccent, fontSize: 8.5, fontWeight: FontWeight.bold))])", t)
-                t = re.sub(r'Text\(\s*[\'\"]J[mM]ovies[\'\"][^)]*\)', "Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: const [Text('Jmovies', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)), Text('POWERED BY JUNAID JAVED', style: TextStyle(color: Colors.redAccent, fontSize: 8.5, fontWeight: FontWeight.bold))])", t)
-                with open(p, 'w') as fl: fl.write(t)
+                with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
+                  t = fl.read()
+
+                m = re.search(r'(const\s+)?Text\s*\(\s*[\'"]J[mM]ovies[\'"]', t)
+                if m and 'JUNAID JAVED' not in t:
+                  start = m.start()
+                  first_paren = t.find('(', start)
+                  if first_paren != -1:
+                    count = 0
+                    end = -1
+                    for i in range(first_paren, len(t)):
+                      if t[i] == '(':
+                        count += 1
+                      elif t[i] == ')':
+                        count -= 1
+                        if count == 0:
+                          end = i + 1
+                          break
+                    if end != -1:
+                      t = t[:start] + branding + t[end:]
+                      with open(p, 'w', encoding='utf-8') as fl:
+                        fl.write(t)
+                      print(f"Branding injected successfully into {p}")
           EOF
 
       - name: Inject Working Universal Player
@@ -177,3 +206,4 @@ jobs:
         with:
           name: jmovies-apk
           path: build/app/outputs/flutter-apk/*.apk
+          
