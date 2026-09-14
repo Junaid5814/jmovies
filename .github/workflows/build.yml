@@ -15,19 +15,13 @@ jobs:
 
       - name: Smart Extract Latest ZIP
         run: |
-          echo "=== ALL FILES IN REPO ==="
-          ls -la
-
-          LATEST_ZIP=$(git log -n 10 --name-only --pretty="" | grep -i "\.zip$" | head -n 1 | tr -d '\r' | tr -d ' ')
-
-          if [ -n "$LATEST_ZIP" ] && [ -f "$LATEST_ZIP" ]; then
-            echo "Extracting newest committed zip: $LATEST_ZIP"
-            unzip -o "$LATEST_ZIP"
-          else
-            FALLBACK_ZIP=$(find . -maxdepth 2 -iname "*jmovies*.zip" | sort -r | head -n 1)
-            echo "Extracting fallback: $FALLBACK_ZIP"
-            unzip -o "$FALLBACK_ZIP"
+          echo "=== EXTRACTING LATEST ZIP ==="
+          LATEST_ZIP=$(ls -t *.[zZ][iI][pP] 2>/dev/null | head -n 1)
+          if [ -z "$LATEST_ZIP" ]; then
+            LATEST_ZIP=$(find . -maxdepth 2 -iname "*.zip" | head -n 1)
           fi
+          echo "Target ZIP: $LATEST_ZIP"
+          unzip -o "$LATEST_ZIP"
 
           if [ ! -f "pubspec.yaml" ]; then
             DIR=$(find . -maxdepth 3 -name "pubspec.yaml" -exec dirname {} \; | head -n 1)
@@ -36,9 +30,6 @@ jobs:
               cp -r $DIR/* .
             fi
           fi
-
-          echo "=== VERIFYING NEW CODE FILES ==="
-          find lib -name "*media_item*" -o -name "*home_screen*"
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -84,13 +75,13 @@ jobs:
           IMAGE_BASE_URL=https://image.tmdb.org/t/p/w500
           EOF
 
-          cp .env assets/.env
+          cp .env assets/.env 2>/dev/null || true
 
           if ! grep -q "\.env" pubspec.yaml; then
             sed -i '/flutter:/a \  assets:\n    - .env\n    - assets/\n    - assets/images/\n    - assets/icons/' pubspec.yaml
           fi
 
-      - name: Smart Key and Bearer Token Injection
+      - name: Safe TMDB Key Injection
         env:
           TMDB_SECRET: ${{ secrets.TMDB_READ_TOKEN }}
         run: |
@@ -110,27 +101,15 @@ jobs:
                       with open(p, "r", encoding="utf-8", errors="ignore") as file:
                           content = file.read()
 
-                      def replace_dotenv(m):
-                          var = m.group(1).upper()
-                          if "TOKEN" in var or "AUTH" in var:
-                              return f"'{token}'"
-                          return f"'{key}'"
+                      for placeholder in ["YOUR_TMDB_API_KEY", "YOUR_API_KEY", "your_api_key_here", "YOUR_TMDB_KEY"]:
+                          content = content.replace(placeholder, key)
+                      for placeholder in ["YOUR_READ_ACCESS_TOKEN", "YOUR_ACCESS_TOKEN", "YOUR_TOKEN", "your_token_here"]:
+                          content = content.replace(placeholder, token)
 
-                      content = re.sub(r"dotenv\.(?:env\[|get\()[\'\"]([^\'\"]+)[\'\"](?:\]|\))", replace_dotenv, content)
-
-                      content = content.replace("YOUR_TMDB_API_KEY", key).replace("YOUR_API_KEY", key).replace("your_api_key_here", key)
-                      content = content.replace("YOUR_READ_ACCESS_TOKEN", token).replace("YOUR_ACCESS_TOKEN", token).replace("YOUR_TOKEN", token)
-
-                      content = re.sub(r'([a-zA-Z0-9_]*token[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', rf"\g<1>'{token}'", content, flags=re.IGNORECASE)
-                      content = re.sub(r'([a-zA-Z0-9_]*bearer[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', rf"\g<1>'{token}'", content, flags=re.IGNORECASE)
-
-                      def replace_key(m):
-                          var = m.group(1)
-                          if "token" in var.lower():
-                              return f"{var}'{token}'"
-                          return f"{var}'{key}'"
-
-                      content = re.sub(r'([a-zA-Z0-9_]*key[a-zA-Z0-9_]*\s*=\s*)[\'\"][^\'\"]*[\'\"]', replace_key, content, flags=re.IGNORECASE)
+                      content = re.sub(r"dotenv\.(?:env\[|get\()[\'\"](?:TMDB_)?(?:API_)?KEY[\'\"](?:\]|\))", f"'{key}'", content, flags=re.IGNORECASE)
+                      content = re.sub(r"dotenv\.(?:env\[|get\()[\'\"](?:TMDB_)?(?:READ_)?(?:ACCESS_)?TOKEN[\'\"](?:\]|\))", f"'{token}'", content, flags=re.IGNORECASE)
+                      content = re.sub(r"dotenv\.(?:env\[|get\()[\'\"]BASE_URL[\'\"](?:\]|\))", "'https://api.themoviedb.org/3'", content, flags=re.IGNORECASE)
+                      content = re.sub(r"dotenv\.(?:env\[|get\()[\'\"]IMAGE_BASE_URL[\'\"](?:\]|\))", "'https://image.tmdb.org/t/p/w500'", content, flags=re.IGNORECASE)
 
                       content = content.replace(f"Bearer {key}", f"Bearer {token}")
                       content = re.sub(r'Duration\(\s*seconds\s*:\s*[0-9]+\s*\)', 'Duration(seconds: 60)', content)
@@ -139,7 +118,41 @@ jobs:
                           file.write(content)
           EOF
 
-      - name: Inject Universal Player (Movies, Series & Anime)
+      - name: Inject Branding (Powered by Junaid Javed)
+        run: |
+          python3 - << 'EOF'
+          import os, re
+
+          branding_widget = """Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: const [
+              Text('JMovies', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+              Text('POWERED BY JUNAID JAVED', style: TextStyle(color: Colors.redAccent, fontSize: 8.5, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
+            ],
+          )"""
+
+          for root, _, files in os.walk("lib"):
+              for f in files:
+                  if f.endswith(".dart"):
+                      p = os.path.join(root, f)
+                      with open(p, "r", encoding="utf-8", errors="ignore") as file:
+                          content = file.read()
+
+                      if "JMovies" in content and "JUNAID JAVED" not in content:
+                          new_content = re.sub(
+                              r"(?:const\s+)?Text\(\s*[\'\"]JMovies[\'\"][^)]*\)",
+                              branding_widget,
+                              content,
+                              count=1
+                          )
+                          if new_content != content:
+                              with open(p, "w", encoding="utf-8") as file:
+                                  file.write(new_content)
+                              print(f"Branding successfully added to: {p}")
+          EOF
+
+      - name: Inject Working Universal Player
         run: |
           cat << 'EOF' > lib/screens/player/player_screen.dart
           import 'dart:async';
@@ -147,10 +160,10 @@ jobs:
           import 'package:flutter/services.dart';
           import 'package:wakelock_plus/wakelock_plus.dart';
           import 'package:webview_flutter/webview_flutter.dart';
-          import '../../data/models/movie_model.dart';
 
           class PlayerScreen extends StatefulWidget {
-            final Movie? movie;
+            final dynamic movie;
+            final dynamic mediaItem;
             final int? tmdbId;
             final String? title;
             final bool isTv;
@@ -160,6 +173,7 @@ jobs:
             const PlayerScreen({
               super.key,
               this.movie,
+              this.mediaItem,
               this.tmdbId,
               this.title,
               this.isTv = false,
@@ -174,6 +188,7 @@ jobs:
               required int seasonNumber,
               required int episodeNumber,
               this.movie,
+              this.mediaItem,
             })  : tmdbId = tmdbId,
                   title = title,
                   isTv = true,
@@ -190,8 +205,50 @@ jobs:
             int _currentServerIndex = 0;
             late final List<Map<String, String>> _servers;
 
-            int get _resolvedId => widget.tmdbId ?? widget.movie?.id ?? 0;
-            String get _resolvedTitle => widget.title ?? widget.movie?.title ?? 'Stream';
+            int get _resolvedId {
+              if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
+              if (widget.mediaItem != null) {
+                try {
+                  final id = widget.mediaItem.id;
+                  if (id != null) return id as int;
+                } catch (_) {}
+              }
+              if (widget.movie != null) {
+                try {
+                  final id = widget.movie.id;
+                  if (id != null) return id as int;
+                } catch (_) {}
+              }
+              return 0;
+            }
+
+            String get _resolvedTitle {
+              if (widget.title != null && widget.title!.isNotEmpty) return widget.title!;
+              if (widget.mediaItem != null) {
+                try {
+                  final t = widget.mediaItem.title;
+                  if (t != null) return t.toString();
+                } catch (_) {}
+              }
+              if (widget.movie != null) {
+                try {
+                  final t = widget.movie.title;
+                  if (t != null) return t.toString();
+                } catch (_) {}
+              }
+              return 'Stream';
+            }
+
+            bool get _resolvedIsTv {
+              if (widget.isTv) return true;
+              if (widget.seasonNumber != null && widget.seasonNumber! > 0) return true;
+              if (widget.mediaItem != null) {
+                try {
+                  if (widget.mediaItem.mediaType == 'tv') return true;
+                } catch (_) {}
+              }
+              return false;
+            }
 
             @override
             void initState() {
@@ -207,34 +264,34 @@ jobs:
               final s = widget.seasonNumber ?? 1;
               final e = widget.episodeNumber ?? 1;
 
-              if (widget.isTv) {
+              if (_resolvedIsTv) {
                 _servers = [
                   {
-                    'name': 'Server Alpha (VidLink)',
-                    'url': 'https://vidlink.pro/tv/$id/$s/$e',
+                    'name': 'Server 1 (VidSrc Pro)',
+                    'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e',
                   },
                   {
-                    'name': 'Server Beta (MultiEmbed - Regional)',
+                    'name': 'Server 2 (MultiEmbed - Hindi/Regional)',
                     'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e',
                   },
                   {
-                    'name': 'Server Gamma (VidSrc)',
-                    'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e',
+                    'name': 'Server 3 (VidLink)',
+                    'url': 'https://vidlink.pro/tv/$id/$s/$e',
                   },
                 ];
               } else {
                 _servers = [
                   {
-                    'name': 'Server Alpha (VidLink)',
-                    'url': 'https://vidlink.pro/movie/$id',
+                    'name': 'Server 1 (VidSrc Pro)',
+                    'url': 'https://vidsrc.cc/v2/embed/movie/$id',
                   },
                   {
-                    'name': 'Server Beta (MultiEmbed - Hindi/Regional)',
+                    'name': 'Server 2 (MultiEmbed - Hindi/Regional)',
                     'url': 'https://multiembed.mov/?video_id=$id&tmdb=1',
                   },
                   {
-                    'name': 'Server Gamma (VidSrc)',
-                    'url': 'https://vidsrc.cc/v2/embed/movie/$id',
+                    'name': 'Server 3 (VidLink)',
+                    'url': 'https://vidlink.pro/movie/$id',
                   },
                 ];
               }
@@ -245,6 +302,7 @@ jobs:
             void _initWebView() {
               _controller = WebViewController()
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..setUserAgent('Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
                 ..setBackgroundColor(Colors.black)
                 ..setNavigationDelegate(
                   NavigationDelegate(
@@ -258,9 +316,9 @@ jobs:
                       final url = request.url.toLowerCase();
                       if (url.startsWith('blob:') ||
                           url.startsWith('about:') ||
-                          url.contains('vidlink') ||
-                          url.contains('multiembed') ||
                           url.contains('vidsrc') ||
+                          url.contains('multiembed') ||
+                          url.contains('vidlink') ||
                           url.contains('embed') ||
                           url.contains('stream') ||
                           url.contains('m3u8') ||
@@ -299,7 +357,7 @@ jobs:
                         const Padding(
                           padding: EdgeInsets.all(16),
                           child: Text(
-                            'Select Server',
+                            'Select Stream Server',
                             style: TextStyle(
                               color: Colors.white,
                               fontSize: 18,
@@ -350,7 +408,7 @@ jobs:
 
             @override
             Widget build(BuildContext context) {
-              final headerTitle = widget.isTv && widget.seasonNumber != null && widget.episodeNumber != null
+              final headerTitle = _resolvedIsTv && widget.seasonNumber != null && widget.episodeNumber != null
                   ? '$_resolvedTitle (S${widget.seasonNumber}E${widget.episodeNumber})'
                   : _resolvedTitle;
 
@@ -370,7 +428,7 @@ jobs:
                                 const CircularProgressIndicator(color: Colors.redAccent),
                                 const SizedBox(height: 16),
                                 Text(
-                                  'Connecting to stream (${_servers[_currentServerIndex]['name']})...',
+                                  'Connecting to ${_servers[_currentServerIndex]['name']}...',
                                   style: const TextStyle(color: Colors.white70, fontSize: 14),
                                 ),
                               ],
@@ -438,6 +496,8 @@ jobs:
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
+          find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
+
           if [ -f "android/build.gradle" ]; then
             cat << 'EOF' >> android/build.gradle
 
