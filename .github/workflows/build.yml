@@ -59,7 +59,6 @@ jobs:
         run: |
           python3 - << 'EOF'
           import os, re
-
           branding = """Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -68,129 +67,271 @@ jobs:
               Text('POWERED BY JUNAID JAVED', style: TextStyle(color: Colors.redAccent, fontSize: 8.5, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
             ],
           )"""
-
           for r, _, fs in os.walk('lib'):
             for f in fs:
               if f.endswith('.dart'):
                 p = os.path.join(r, f)
-                with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
-                  t = fl.read()
-
+                with open(p, 'r', encoding='utf-8', errors='ignore') as fl: t = fl.read()
                 m = re.search(r'(const\s+)?Text\s*\(\s*[\'"]J[mM]ovies[\'"]', t)
                 if m and 'JUNAID JAVED' not in t:
                   start = m.start()
                   first_paren = t.find('(', start)
                   if first_paren != -1:
-                    count = 0
-                    end = -1
+                    count, end = 0, -1
                     for i in range(first_paren, len(t)):
-                      if t[i] == '(':
-                        count += 1
+                      if t[i] == '(': count += 1
                       elif t[i] == ')':
                         count -= 1
-                        if count == 0:
-                          end = i + 1
-                          break
+                        if count == 0: end = i + 1; break
                     if end != -1:
                       t = t[:start] + branding + t[end:]
-                      with open(p, 'w', encoding='utf-8') as fl:
-                        fl.write(t)
-                      print(f"Branding injected successfully into {p}")
+                      with open(p, 'w', encoding='utf-8') as fl: fl.write(t)
           EOF
 
-      - name: Inject Working Universal Player
+      - name: Auto-Detect and Replace Player With Working Multi-Server
         run: |
-          cat << 'EOF' > lib/screens/player/player_screen.dart
-          import 'package:flutter/material.dart';
+          python3 - << 'EOF'
+          import os, re
+
+          # 1. Global dead-domain replacement
+          replacements = {
+              'vidsrc.to': 'vidsrc.cc/v2',
+              'vidsrc.me': 'vidsrc.cc/v2',
+              'vidsrc.xyz': 'vidsrc.cc/v2',
+              'vidsrc.pm': 'vidsrc.cc/v2',
+              '2embed.to': 'multiembed.mov',
+              '2embed.cc': 'multiembed.mov',
+              'smashystream.com': 'vidlink.pro',
+          }
+
+          for r, _, fs in os.walk('lib'):
+              for f in fs:
+                  if f.endswith('.dart'):
+                      p = os.path.join(r, f)
+                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
+                          c = fl.read()
+                      orig = c
+                      for old, new in replacements.items():
+                          c = c.replace(old, new)
+                      if c != orig:
+                          with open(p, 'w', encoding='utf-8') as fl:
+                              fl.write(c)
+
+          # 2. Find Claude's exact player file containing the broken error message
+          target_player_file = None
+          target_class_name = 'PlayerScreen'
+
+          for r, _, fs in os.walk('lib'):
+              for f in fs:
+                  if f.endswith('.dart'):
+                      p = os.path.join(r, f)
+                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
+                          c = fl.read()
+                      if 'Could not load the player' in c or ('net::' in c and 'Retry' in c):
+                          target_player_file = p
+                          m = re.search(r'class\s+([A-Za-z0-9_]+)\s+extends\s+StatefulWidget', c)
+                          if m:
+                              target_class_name = m.group(1)
+                          print(f"Target player file detected: {p} (Class: {target_class_name})")
+                          break
+
+          player_code = f"""import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
           import 'package:webview_flutter/webview_flutter.dart';
           import 'package:wakelock_plus/wakelock_plus.dart';
 
-          class PlayerScreen extends StatefulWidget {
+          class {target_class_name} extends StatefulWidget {{
             final dynamic movie;
             final dynamic mediaItem;
+            final dynamic media;
+            final dynamic item;
             final int? tmdbId;
+            final int? id;
             final String? title;
+            final String? name;
             final bool isTv;
+            final bool? isMovie;
             final int? seasonNumber;
+            final int? season;
             final int? episodeNumber;
+            final int? episode;
 
-            const PlayerScreen({super.key, this.movie, this.mediaItem, this.tmdbId, this.title, this.isTv = false, this.seasonNumber, this.episodeNumber});
-            const PlayerScreen.forEpisode({super.key, required int tmdbId, required String title, required int seasonNumber, required int episodeNumber, this.movie, this.mediaItem})
-                : tmdbId = tmdbId, title = title, isTv = true, seasonNumber = seasonNumber, episodeNumber = episodeNumber;
+            const {target_class_name}({{
+              super.key,
+              this.movie,
+              this.mediaItem,
+              this.media,
+              this.item,
+              this.tmdbId,
+              this.id,
+              this.title,
+              this.name,
+              this.isTv = false,
+              this.isMovie,
+              this.seasonNumber,
+              this.season,
+              this.episodeNumber,
+              this.episode,
+            }});
+
+            const {target_class_name}.forEpisode({{
+              super.key,
+              required int tmdbId,
+              required String title,
+              required int seasonNumber,
+              required int episodeNumber,
+              this.movie,
+              this.mediaItem,
+              this.media,
+              this.item,
+              this.id,
+              this.name,
+              this.isTv = true,
+              this.isMovie = false,
+              this.season,
+              this.episode,
+            }}) : tmdbId = tmdbId, title = title, seasonNumber = seasonNumber, episodeNumber = episodeNumber;
 
             @override
-            State<PlayerScreen> createState() => _PlayerScreenState();
-          }
+            State<{target_class_name}> createState() => _{target_class_name}State();
+          }}
 
-          class _PlayerScreenState extends State<PlayerScreen> {
-            late final WebViewController _c;
-            int _srv = 0;
-            int get _id => widget.tmdbId ?? widget.mediaItem?.id ?? widget.movie?.id ?? 0;
-            bool get _isTv => widget.isTv || (widget.seasonNumber != null && widget.seasonNumber! > 0) || (widget.mediaItem?.mediaType == 'tv');
-            
-            List<String> get _urls {
-              final id = _id;
-              final s = widget.seasonNumber ?? 1;
-              final e = widget.episodeNumber ?? 1;
-              return _isTv
-                  ? ['https://vidsrc.cc/v2/embed/tv/$id/$s/$e', 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e', 'https://vidlink.pro/tv/$id/$s/$e']
-                  : ['https://vidsrc.cc/v2/embed/movie/$id', 'https://multiembed.mov/?video_id=$id&tmdb=1', 'https://vidlink.pro/movie/$id'];
-            }
+          class _{target_class_name}State extends State<{target_class_name}> {{
+            late final WebViewController _controller;
+            int _currentServer = 0;
+
+            int get _resolvedId {{
+              if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
+              if (widget.id != null && widget.id! > 0) return widget.id!;
+              for (var obj in [widget.mediaItem, widget.movie, widget.media, widget.item]) {{
+                if (obj != null) {{
+                  try {{
+                    final val = obj.id;
+                    if (val != null && val is int && val > 0) return val;
+                  }} catch (_) {{}}
+                }}
+              }}
+              return 0;
+            }}
+
+            bool get _resolvedIsTv {{
+              if (widget.isTv) return true;
+              if (widget.seasonNumber != null && widget.seasonNumber! > 0) return true;
+              if (widget.season != null && widget.season! > 0) return true;
+              for (var obj in [widget.mediaItem, widget.movie, widget.media, widget.item]) {{
+                if (obj != null) {{
+                  try {{
+                    if (obj.mediaType == 'tv') return true;
+                  }} catch (_) {{}}
+                }}
+              }}
+              return false;
+            }}
+
+            List<Map<String, String>> get _servers {{
+              final id = _resolvedId;
+              final s = widget.seasonNumber ?? widget.season ?? 1;
+              final e = widget.episodeNumber ?? widget.episode ?? 1;
+
+              if (_resolvedIsTv) {{
+                return [
+                  {{'name': 'Server 1 (VidSrc Pro)', 'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e'}},
+                  {{'name': 'Server 2 (MultiEmbed Regional)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e'}},
+                  {{'name': 'Server 3 (VidLink)', 'url': 'https://vidlink.pro/tv/$id/$s/$e'}},
+                ];
+              }} else {{
+                return [
+                  {{'name': 'Server 1 (VidSrc Pro)', 'url': 'https://vidsrc.cc/v2/embed/movie/$id'}},
+                  {{'name': 'Server 2 (MultiEmbed Regional)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1'}},
+                  {{'name': 'Server 3 (VidLink)', 'url': 'https://vidlink.pro/movie/$id'}},
+                ];
+              }}
+            }}
 
             @override
-            void initState() {
+            void initState() {{
               super.initState();
-              SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
+              SystemChrome.setPreferredOrientations([
+                DeviceOrientation.landscapeLeft,
+                DeviceOrientation.landscapeRight,
+              ]);
               SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
               WakelockPlus.enable();
-              _c = WebViewController()
+
+              _controller = WebViewController()
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
                 ..setUserAgent('Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
                 ..setBackgroundColor(Colors.black)
-                ..loadRequest(Uri.parse(_urls[_srv]));
-            }
+                ..loadRequest(Uri.parse(_servers[_currentServer]['url']!));
+            }}
 
             @override
-            void dispose() {
+            void dispose() {{
               SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
               SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
               WakelockPlus.disable();
               super.dispose();
-            }
+            }}
 
             @override
-            Widget build(BuildContext context) {
+            Widget build(BuildContext context) {{
+              final srv = _servers[_currentServer];
               return Scaffold(
                 backgroundColor: Colors.black,
                 body: SafeArea(
                   child: Stack(
                     children: [
-                      WebViewWidget(controller: _c),
+                      WebViewWidget(controller: _controller),
                       Positioned(
-                        top: 10, left: 10,
+                        top: 12,
+                        left: 12,
                         child: CircleAvatar(
                           backgroundColor: Colors.black54,
-                          child: IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: () => Navigator.pop(context)),
+                          child: IconButton(
+                            icon: const Icon(Icons.arrow_back, color: Colors.white),
+                            onPressed: () => Navigator.pop(context),
+                          ),
                         ),
                       ),
                       Positioned(
-                        top: 10, right: 10,
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-                          onPressed: () {
-                            setState(() => _srv = (_srv + 1) % _urls.length);
-                            _c.loadRequest(Uri.parse(_urls[_srv]));
-                          },
-                          child: Text('Server ${_srv + 1} (Switch)', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                        top: 12,
+                        right: 12,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.redAccent,
+                            foregroundColor: Colors.white,
+                          ),
+                          icon: const Icon(Icons.dns_rounded, size: 16),
+                          label: Text(srv['name']!),
+                          onPressed: () {{
+                            setState(() {{
+                              _currentServer = (_currentServer + 1) % _servers.length;
+                            }});
+                            _controller.loadRequest(Uri.parse(_servers[_currentServer]['url']!));
+                          }},
                         ),
                       ),
                     ],
                   ),
                 ),
               );
-            }
-          }
+            }}
+          }}
+          """
+
+          destinations = set()
+          if target_player_file:
+              destinations.add(target_player_file)
+          destinations.add('lib/screens/player/player_screen.dart')
+          destinations.add('lib/screens/player_screen.dart')
+
+          for dest in destinations:
+              d = os.path.dirname(dest)
+              if d:
+                  os.makedirs(d, exist_ok=True)
+              with open(dest, 'w', encoding='utf-8') as fl:
+                  fl.write(player_code)
+              print(f"Replaced player in: {dest}")
           EOF
 
       - name: Patch Plugins (SDK 34 & Proguard)
