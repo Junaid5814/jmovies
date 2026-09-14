@@ -10,25 +10,14 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 10
 
-      - name: Smart Extract Latest ZIP
+      - name: Extract ZIP
         run: |
-          echo "=== EXTRACTING LATEST ZIP ==="
-          LATEST_ZIP=$(ls -t *.[zZ][iI][pP] 2>/dev/null | head -n 1)
-          if [ -z "$LATEST_ZIP" ]; then
-            LATEST_ZIP=$(find . -maxdepth 2 -iname "*.zip" | head -n 1)
-          fi
-          echo "Target ZIP: $LATEST_ZIP"
+          LATEST_ZIP=$(ls -t *.zip 2>/dev/null | head -n 1)
           unzip -o "$LATEST_ZIP"
-
           if [ ! -f "pubspec.yaml" ]; then
             DIR=$(find . -maxdepth 3 -name "pubspec.yaml" -exec dirname {} \; | head -n 1)
-            if [ -n "$DIR" ]; then
-              echo "Moving project files from $DIR to root..."
-              cp -r $DIR/* .
-            fi
+            cp -r $DIR/* .
           fi
 
       - name: Setup Java
@@ -42,7 +31,7 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Recreate Clean Android Project
+      - name: Recreate Android Project
         run: |
           rm -rf android
           flutter create . --platforms=android --org com.jmovies.app
@@ -51,115 +40,42 @@ jobs:
 
       - name: Add Dependencies
         run: |
-          flutter pub add carousel_slider:^5.0.0
-          flutter pub add webview_flutter
+          flutter pub add carousel_slider:^5.0.0 webview_flutter wakelock_plus
           flutter pub get
 
       - name: Setup Tokens & .env File
-        env:
-          TMDB_SECRET: ${{ secrets.TMDB_READ_TOKEN }}
         run: |
           KEY="dac07662083decf2616c4e68d22342c9"
-          TOKEN="${TMDB_SECRET:-eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4}"
-
+          TOKEN="eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4"
           cat << EOF > .env
           TMDB_ACCESS_TOKEN=$TOKEN
-          TMDB_READ_TOKEN=$TOKEN
-          TMDB_TOKEN=$TOKEN
-          ACCESS_TOKEN=$TOKEN
-          TOKEN=$TOKEN
           TMDB_API_KEY=$KEY
-          API_KEY=$KEY
-          TMDB_KEY=$KEY
           BASE_URL=https://api.themoviedb.org/3
           IMAGE_BASE_URL=https://image.tmdb.org/t/p/w500
           EOF
-
           cp .env assets/.env 2>/dev/null || true
-
-          if ! grep -q "\.env" pubspec.yaml; then
-            sed -i '/flutter:/a \  assets:\n    - .env\n    - assets/\n    - assets/images/\n    - assets/icons/' pubspec.yaml
-          fi
-
-      - name: Safe TMDB Key Injection
-        env:
-          TMDB_SECRET: ${{ secrets.TMDB_READ_TOKEN }}
-        run: |
-          export KEY="dac07662083decf2616c4e68d22342c9"
-          export TOKEN="${TMDB_SECRET:-eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4}"
-
-          python3 - << 'EOF'
-          import os, re
-
-          key = os.environ.get("KEY", "")
-          token = os.environ.get("TOKEN", "")
-
-          for root, _, files in os.walk("lib"):
-              for f in files:
-                  if f.endswith(".dart"):
-                      p = os.path.join(root, f)
-                      with open(p, "r", encoding="utf-8", errors="ignore") as file:
-                          content = file.read()
-
-                      for placeholder in ["YOUR_TMDB_API_KEY", "YOUR_API_KEY", "your_api_key_here", "YOUR_TMDB_KEY"]:
-                          content = content.replace(placeholder, key)
-                      for placeholder in ["YOUR_READ_ACCESS_TOKEN", "YOUR_ACCESS_TOKEN", "YOUR_TOKEN", "your_token_here"]:
-                          content = content.replace(placeholder, token)
-
-                      content = re.sub(r"dotenv\.(?:env\[|get\()[\'\"](?:TMDB_)?(?:API_)?KEY[\'\"](?:\]|\))", f"'{key}'", content, flags=re.IGNORECASE)
-                      content = re.sub(r"dotenv\.(?:env\[|get\()[\'\"](?:TMDB_)?(?:READ_)?(?:ACCESS_)?TOKEN[\'\"](?:\]|\))", f"'{token}'", content, flags=re.IGNORECASE)
-                      content = re.sub(r"dotenv\.(?:env\[|get\()[\'\"]BASE_URL[\'\"](?:\]|\))", "'https://api.themoviedb.org/3'", content, flags=re.IGNORECASE)
-                      content = re.sub(r"dotenv\.(?:env\[|get\()[\'\"]IMAGE_BASE_URL[\'\"](?:\]|\))", "'https://image.tmdb.org/t/p/w500'", content, flags=re.IGNORECASE)
-
-                      content = content.replace(f"Bearer {key}", f"Bearer {token}")
-                      content = re.sub(r'Duration\(\s*seconds\s*:\s*[0-9]+\s*\)', 'Duration(seconds: 60)', content)
-
-                      with open(p, "w", encoding="utf-8") as file:
-                          file.write(content)
-          EOF
 
       - name: Inject Branding (Powered by Junaid Javed)
         run: |
           python3 - << 'EOF'
           import os, re
-
-          branding_widget = """Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: const [
-              Text('JMovies', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
-              Text('POWERED BY JUNAID JAVED', style: TextStyle(color: Colors.redAccent, fontSize: 8.5, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
-            ],
-          )"""
-
-          for root, _, files in os.walk("lib"):
-              for f in files:
-                  if f.endswith(".dart"):
-                      p = os.path.join(root, f)
-                      with open(p, "r", encoding="utf-8", errors="ignore") as file:
-                          content = file.read()
-
-                      if "JMovies" in content and "JUNAID JAVED" not in content:
-                          new_content = re.sub(
-                              r"(?:const\s+)?Text\(\s*[\'\"]JMovies[\'\"][^)]*\)",
-                              branding_widget,
-                              content,
-                              count=1
-                          )
-                          if new_content != content:
-                              with open(p, "w", encoding="utf-8") as file:
-                                  file.write(new_content)
-                              print(f"Branding successfully added to: {p}")
+          for r, _, fs in os.walk('lib'):
+            for f in fs:
+              if f.endswith('.dart'):
+                p = os.path.join(r, f)
+                with open(p, 'r') as fl: t = fl.read()
+                t = re.sub(r'const\s+Text\(\s*[\'\"]J[mM]ovies[\'\"][^)]*\)', "Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: const [Text('Jmovies', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)), Text('POWERED BY JUNAID JAVED', style: TextStyle(color: Colors.redAccent, fontSize: 8.5, fontWeight: FontWeight.bold))])", t)
+                t = re.sub(r'Text\(\s*[\'\"]J[mM]ovies[\'\"][^)]*\)', "Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: const [Text('Jmovies', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)), Text('POWERED BY JUNAID JAVED', style: TextStyle(color: Colors.redAccent, fontSize: 8.5, fontWeight: FontWeight.bold))])", t)
+                with open(p, 'w') as fl: fl.write(t)
           EOF
 
       - name: Inject Working Universal Player
         run: |
           cat << 'EOF' > lib/screens/player/player_screen.dart
-          import 'dart:async';
           import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
-          import 'package:wakelock_plus/wakelock_plus.dart';
           import 'package:webview_flutter/webview_flutter.dart';
+          import 'package:wakelock_plus/wakelock_plus.dart';
 
           class PlayerScreen extends StatefulWidget {
             final dynamic movie;
@@ -170,232 +86,40 @@ jobs:
             final int? seasonNumber;
             final int? episodeNumber;
 
-            const PlayerScreen({
-              super.key,
-              this.movie,
-              this.mediaItem,
-              this.tmdbId,
-              this.title,
-              this.isTv = false,
-              this.seasonNumber,
-              this.episodeNumber,
-            });
-
-            const PlayerScreen.forEpisode({
-              super.key,
-              required int tmdbId,
-              required String title,
-              required int seasonNumber,
-              required int episodeNumber,
-              this.movie,
-              this.mediaItem,
-            })  : tmdbId = tmdbId,
-                  title = title,
-                  isTv = true,
-                  seasonNumber = seasonNumber,
-                  episodeNumber = episodeNumber;
+            const PlayerScreen({super.key, this.movie, this.mediaItem, this.tmdbId, this.title, this.isTv = false, this.seasonNumber, this.episodeNumber});
+            const PlayerScreen.forEpisode({super.key, required int tmdbId, required String title, required int seasonNumber, required int episodeNumber, this.movie, this.mediaItem})
+                : tmdbId = tmdbId, title = title, isTv = true, seasonNumber = seasonNumber, episodeNumber = episodeNumber;
 
             @override
             State<PlayerScreen> createState() => _PlayerScreenState();
           }
 
           class _PlayerScreenState extends State<PlayerScreen> {
-            late final WebViewController _controller;
-            bool _isLoading = true;
-            int _currentServerIndex = 0;
-            late final List<Map<String, String>> _servers;
-
-            int get _resolvedId {
-              if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
-              if (widget.mediaItem != null) {
-                try {
-                  final id = widget.mediaItem.id;
-                  if (id != null) return id as int;
-                } catch (_) {}
-              }
-              if (widget.movie != null) {
-                try {
-                  final id = widget.movie.id;
-                  if (id != null) return id as int;
-                } catch (_) {}
-              }
-              return 0;
-            }
-
-            String get _resolvedTitle {
-              if (widget.title != null && widget.title!.isNotEmpty) return widget.title!;
-              if (widget.mediaItem != null) {
-                try {
-                  final t = widget.mediaItem.title;
-                  if (t != null) return t.toString();
-                } catch (_) {}
-              }
-              if (widget.movie != null) {
-                try {
-                  final t = widget.movie.title;
-                  if (t != null) return t.toString();
-                } catch (_) {}
-              }
-              return 'Stream';
-            }
-
-            bool get _resolvedIsTv {
-              if (widget.isTv) return true;
-              if (widget.seasonNumber != null && widget.seasonNumber! > 0) return true;
-              if (widget.mediaItem != null) {
-                try {
-                  if (widget.mediaItem.mediaType == 'tv') return true;
-                } catch (_) {}
-              }
-              return false;
+            late final WebViewController _c;
+            int _srv = 0;
+            int get _id => widget.tmdbId ?? widget.mediaItem?.id ?? widget.movie?.id ?? 0;
+            bool get _isTv => widget.isTv || (widget.seasonNumber != null && widget.seasonNumber! > 0) || (widget.mediaItem?.mediaType == 'tv');
+            
+            List<String> get _urls {
+              final id = _id;
+              final s = widget.seasonNumber ?? 1;
+              final e = widget.episodeNumber ?? 1;
+              return _isTv
+                  ? ['https://vidsrc.cc/v2/embed/tv/$id/$s/$e', 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e', 'https://vidlink.pro/tv/$id/$s/$e']
+                  : ['https://vidsrc.cc/v2/embed/movie/$id', 'https://multiembed.mov/?video_id=$id&tmdb=1', 'https://vidlink.pro/movie/$id'];
             }
 
             @override
             void initState() {
               super.initState();
-              SystemChrome.setPreferredOrientations([
-                DeviceOrientation.landscapeLeft,
-                DeviceOrientation.landscapeRight,
-              ]);
+              SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
               SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
               WakelockPlus.enable();
-
-              final id = _resolvedId;
-              final s = widget.seasonNumber ?? 1;
-              final e = widget.episodeNumber ?? 1;
-
-              if (_resolvedIsTv) {
-                _servers = [
-                  {
-                    'name': 'Server 1 (VidSrc Pro)',
-                    'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e',
-                  },
-                  {
-                    'name': 'Server 2 (MultiEmbed - Hindi/Regional)',
-                    'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e',
-                  },
-                  {
-                    'name': 'Server 3 (VidLink)',
-                    'url': 'https://vidlink.pro/tv/$id/$s/$e',
-                  },
-                ];
-              } else {
-                _servers = [
-                  {
-                    'name': 'Server 1 (VidSrc Pro)',
-                    'url': 'https://vidsrc.cc/v2/embed/movie/$id',
-                  },
-                  {
-                    'name': 'Server 2 (MultiEmbed - Hindi/Regional)',
-                    'url': 'https://multiembed.mov/?video_id=$id&tmdb=1',
-                  },
-                  {
-                    'name': 'Server 3 (VidLink)',
-                    'url': 'https://vidlink.pro/movie/$id',
-                  },
-                ];
-              }
-
-              _initWebView();
-            }
-
-            void _initWebView() {
-              _controller = WebViewController()
+              _c = WebViewController()
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
                 ..setUserAgent('Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
                 ..setBackgroundColor(Colors.black)
-                ..setNavigationDelegate(
-                  NavigationDelegate(
-                    onPageStarted: (String url) {
-                      if (mounted) setState(() => _isLoading = true);
-                    },
-                    onPageFinished: (String url) {
-                      if (mounted) setState(() => _isLoading = false);
-                    },
-                    onNavigationRequest: (NavigationRequest request) {
-                      final url = request.url.toLowerCase();
-                      if (url.startsWith('blob:') ||
-                          url.startsWith('about:') ||
-                          url.contains('vidsrc') ||
-                          url.contains('multiembed') ||
-                          url.contains('vidlink') ||
-                          url.contains('embed') ||
-                          url.contains('stream') ||
-                          url.contains('m3u8') ||
-                          url.contains('mp4') ||
-                          url.contains('player')) {
-                        return NavigationDecision.navigate;
-                      }
-                      return NavigationDecision.prevent;
-                    },
-                  ),
-                )
-                ..loadRequest(Uri.parse(_servers[_currentServerIndex]['url']!));
-            }
-
-            void _switchServer(int index) {
-              if (index == _currentServerIndex) return;
-              setState(() {
-                _currentServerIndex = index;
-                _isLoading = true;
-              });
-              _controller.loadRequest(Uri.parse(_servers[index]['url']!));
-            }
-
-            void _showServerSheet() {
-              showModalBottomSheet(
-                context: context,
-                backgroundColor: const Color(0xFF1E1E1E),
-                shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-                ),
-                builder: (context) {
-                  return SafeArea(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Padding(
-                          padding: EdgeInsets.all(16),
-                          child: Text(
-                            'Select Stream Server',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        ..._servers.asMap().entries.map((entry) {
-                          final idx = entry.key;
-                          final server = entry.value;
-                          final isSelected = idx == _currentServerIndex;
-                          return ListTile(
-                            leading: Icon(
-                              isSelected ? Icons.play_circle_fill : Icons.dns_rounded,
-                              color: isSelected ? Colors.redAccent : Colors.white70,
-                            ),
-                            title: Text(
-                              server['name']!,
-                              style: TextStyle(
-                                color: isSelected ? Colors.redAccent : Colors.white,
-                                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                              ),
-                            ),
-                            trailing: isSelected
-                                ? const Icon(Icons.check, color: Colors.redAccent)
-                                : null,
-                            onTap: () {
-                              Navigator.pop(context);
-                              _switchServer(idx);
-                            },
-                          );
-                        }),
-                        const SizedBox(height: 12),
-                      ],
-                    ),
-                  );
-                },
-              );
+                ..loadRequest(Uri.parse(_urls[_srv]));
             }
 
             @override
@@ -408,79 +132,28 @@ jobs:
 
             @override
             Widget build(BuildContext context) {
-              final headerTitle = _resolvedIsTv && widget.seasonNumber != null && widget.episodeNumber != null
-                  ? '$_resolvedTitle (S${widget.seasonNumber}E${widget.episodeNumber})'
-                  : _resolvedTitle;
-
               return Scaffold(
                 backgroundColor: Colors.black,
                 body: SafeArea(
                   child: Stack(
                     children: [
-                      WebViewWidget(controller: _controller),
-                      if (_isLoading)
-                        Container(
-                          color: Colors.black,
-                          child: Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const CircularProgressIndicator(color: Colors.redAccent),
-                                const SizedBox(height: 16),
-                                Text(
-                                  'Connecting to ${_servers[_currentServerIndex]['name']}...',
-                                  style: const TextStyle(color: Colors.white70, fontSize: 14),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
+                      WebViewWidget(controller: _c),
                       Positioned(
-                        top: 12,
-                        left: 12,
-                        right: 12,
-                        child: Row(
-                          children: [
-                            Container(
-                              decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.65),
-                                shape: BoxShape.circle,
-                              ),
-                              child: IconButton(
-                                icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
-                                onPressed: () => Navigator.pop(context),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                headerTitle,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  shadows: [
-                                    Shadow(blurRadius: 4, color: Colors.black),
-                                  ],
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            Container(
-                              decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.65),
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: TextButton.icon(
-                                onPressed: _showServerSheet,
-                                icon: const Icon(Icons.dns_rounded, color: Colors.white, size: 16),
-                                label: Text(
-                                  'Server ${_currentServerIndex + 1}',
-                                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                                ),
-                              ),
-                            ),
-                          ],
+                        top: 10, left: 10,
+                        child: CircleAvatar(
+                          backgroundColor: Colors.black54,
+                          child: IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: () => Navigator.pop(context)),
+                        ),
+                      ),
+                      Positioned(
+                        top: 10, right: 10,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                          onPressed: () {
+                            setState(() => _srv = (_srv + 1) % _urls.length);
+                            _c.loadRequest(Uri.parse(_urls[_srv]));
+                          },
+                          child: Text('Server ${_srv + 1} (Switch)', style: const TextStyle(color: Colors.white, fontSize: 12)),
                         ),
                       ),
                     ],
@@ -491,27 +164,10 @@ jobs:
           }
           EOF
 
-      - name: Patch Plugins (SDK 34 & Proguard Fix)
+      - name: Patch Proguard
         run: |
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
           find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
-
-          if [ -f "android/build.gradle" ]; then
-            cat << 'EOF' >> android/build.gradle
-
-          subprojects {
-              afterEvaluate { project ->
-                  if (project.hasProperty('android')) {
-                      project.android {
-                          compileSdkVersion 34
-                      }
-                  }
-              }
-          }
-          EOF
-          fi
 
       - name: Build APK
         run: flutter build apk --release
