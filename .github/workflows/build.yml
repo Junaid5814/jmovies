@@ -36,11 +36,11 @@ jobs:
           rm -rf android
           flutter create . --platforms=android --org com.jmovies.app
           mkdir -p assets/icons assets/images
-          sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
+          sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
-      - name: Add Dependencies
+      - name: Add Native Player Dependencies
         run: |
-          flutter pub add carousel_slider:^5.0.0 webview_flutter wakelock_plus
+          flutter pub add carousel_slider:^5.0.0 webview_flutter wakelock_plus video_player chewie
           flutter pub get
 
       - name: Setup Tokens & .env File
@@ -88,59 +88,18 @@ jobs:
                       with open(p, 'w', encoding='utf-8') as fl: fl.write(t)
           EOF
 
-      - name: Auto-Detect and Replace Player With Working Multi-Server
+      - name: Inject Native Chewie Player Engine
         run: |
-          python3 - << 'EOF'
-          import os, re
-
-          # 1. Global dead-domain replacement
-          replacements = {
-              'vidsrc.to': 'vidsrc.cc/v2',
-              'vidsrc.me': 'vidsrc.cc/v2',
-              'vidsrc.xyz': 'vidsrc.cc/v2',
-              'vidsrc.pm': 'vidsrc.cc/v2',
-              '2embed.to': 'multiembed.mov',
-              '2embed.cc': 'multiembed.mov',
-              'smashystream.com': 'vidlink.pro',
-          }
-
-          for r, _, fs in os.walk('lib'):
-              for f in fs:
-                  if f.endswith('.dart'):
-                      p = os.path.join(r, f)
-                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
-                          c = fl.read()
-                      orig = c
-                      for old, new in replacements.items():
-                          c = c.replace(old, new)
-                      if c != orig:
-                          with open(p, 'w', encoding='utf-8') as fl:
-                              fl.write(c)
-
-          # 2. Find Claude's exact player file containing the broken error message
-          target_player_file = None
-          target_class_name = 'PlayerScreen'
-
-          for r, _, fs in os.walk('lib'):
-              for f in fs:
-                  if f.endswith('.dart'):
-                      p = os.path.join(r, f)
-                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
-                          c = fl.read()
-                      if 'Could not load the player' in c or ('net::' in c and 'Retry' in c):
-                          target_player_file = p
-                          m = re.search(r'class\s+([A-Za-z0-9_]+)\s+extends\s+StatefulWidget', c)
-                          if m:
-                              target_class_name = m.group(1)
-                          print(f"Target player file detected: {p} (Class: {target_class_name})")
-                          break
-
-          player_code = f"""import 'package:flutter/material.dart';
+          cat << 'EOF' > lib/screens/player_screen.dart
+          import 'dart:async';
+          import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
+          import 'package:video_player/video_player.dart';
+          import 'package:chewie/chewie.dart';
           import 'package:webview_flutter/webview_flutter.dart';
           import 'package:wakelock_plus/wakelock_plus.dart';
 
-          class {target_class_name} extends StatefulWidget {{
+          class PlayerScreen extends StatefulWidget {
             final dynamic movie;
             final dynamic mediaItem;
             final dynamic media;
@@ -156,7 +115,7 @@ jobs:
             final int? episodeNumber;
             final int? episode;
 
-            const {target_class_name}({{
+            const PlayerScreen({
               super.key,
               this.movie,
               this.mediaItem,
@@ -172,9 +131,9 @@ jobs:
               this.season,
               this.episodeNumber,
               this.episode,
-            }});
+            });
 
-            const {target_class_name}.forEpisode({{
+            const PlayerScreen.forEpisode({
               super.key,
               required int tmdbId,
               required String title,
@@ -190,66 +149,86 @@ jobs:
               this.isMovie = false,
               this.season,
               this.episode,
-            }}) : tmdbId = tmdbId, title = title, seasonNumber = seasonNumber, episodeNumber = episodeNumber;
+            }) : tmdbId = tmdbId, title = title, seasonNumber = seasonNumber, episodeNumber = episodeNumber;
 
             @override
-            State<{target_class_name}> createState() => _{target_class_name}State();
-          }}
+            State<PlayerScreen> createState() => _PlayerScreenState();
+          }
 
-          class _{target_class_name}State extends State<{target_class_name}> {{
-            late final WebViewController _controller;
-            int _currentServer = 0;
+          class _PlayerScreenState extends State<PlayerScreen> {
+            VideoPlayerController? _videoPlayerController;
+            ChewieController? _chewieController;
+            WebViewController? _extractorController;
 
-            int get _resolvedId {{
+            bool _isExtracting = true;
+            bool _nativeReady = false;
+            String? _streamUrl;
+            int _serverIndex = 0;
+
+            int get _resolvedId {
               if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
               if (widget.id != null && widget.id! > 0) return widget.id!;
-              for (var obj in [widget.mediaItem, widget.movie, widget.media, widget.item]) {{
-                if (obj != null) {{
-                  try {{
+              for (var obj in [widget.mediaItem, widget.movie, widget.media, widget.item]) {
+                if (obj != null) {
+                  try {
                     final val = obj.id;
                     if (val != null && val is int && val > 0) return val;
-                  }} catch (_) {{}}
-                }}
-              }}
+                  } catch (_) {}
+                }
+              }
               return 0;
-            }}
+            }
 
-            bool get _resolvedIsTv {{
+            String get _resolvedTitle {
+              if (widget.title != null && widget.title!.isNotEmpty) return widget.title!;
+              if (widget.name != null && widget.name!.isNotEmpty) return widget.name!;
+              for (var obj in [widget.mediaItem, widget.movie, widget.media, widget.item]) {
+                if (obj != null) {
+                  try {
+                    final t = obj.title ?? obj.name;
+                    if (t != null && t.toString().isNotEmpty) return t.toString();
+                  } catch (_) {}
+                }
+              }
+              return 'Playing';
+            }
+
+            bool get _resolvedIsTv {
               if (widget.isTv) return true;
               if (widget.seasonNumber != null && widget.seasonNumber! > 0) return true;
               if (widget.season != null && widget.season! > 0) return true;
-              for (var obj in [widget.mediaItem, widget.movie, widget.media, widget.item]) {{
-                if (obj != null) {{
-                  try {{
+              for (var obj in [widget.mediaItem, widget.movie, widget.media, widget.item]) {
+                if (obj != null) {
+                  try {
                     if (obj.mediaType == 'tv') return true;
-                  }} catch (_) {{}}
-                }}
-              }}
+                  } catch (_) {}
+                }
+              }
               return false;
-            }}
+            }
 
-            List<Map<String, String>> get _servers {{
+            List<String> get _embedUrls {
               final id = _resolvedId;
               final s = widget.seasonNumber ?? widget.season ?? 1;
               final e = widget.episodeNumber ?? widget.episode ?? 1;
 
-              if (_resolvedIsTv) {{
+              if (_resolvedIsTv) {
                 return [
-                  {{'name': 'Server 1 (VidSrc Pro)', 'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e'}},
-                  {{'name': 'Server 2 (MultiEmbed Regional)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e'}},
-                  {{'name': 'Server 3 (VidLink)', 'url': 'https://vidlink.pro/tv/$id/$s/$e'}},
+                  'https://vidsrc.cc/v2/embed/tv/$id/$s/$e',
+                  'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e',
+                  'https://vidlink.pro/tv/$id/$s/$e',
                 ];
-              }} else {{
+              } else {
                 return [
-                  {{'name': 'Server 1 (VidSrc Pro)', 'url': 'https://vidsrc.cc/v2/embed/movie/$id'}},
-                  {{'name': 'Server 2 (MultiEmbed Regional)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1'}},
-                  {{'name': 'Server 3 (VidLink)', 'url': 'https://vidlink.pro/movie/$id'}},
+                  'https://vidsrc.cc/v2/embed/movie/$id',
+                  'https://multiembed.mov/?video_id=$id&tmdb=1',
+                  'https://vidlink.pro/movie/$id',
                 ];
-              }}
-            }}
+              }
+            }
 
             @override
-            void initState() {{
+            void initState() {
               super.initState();
               SystemChrome.setPreferredOrientations([
                 DeviceOrientation.landscapeLeft,
@@ -258,30 +237,189 @@ jobs:
               SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
               WakelockPlus.enable();
 
-              _controller = WebViewController()
+              _startStreamExtraction();
+            }
+
+            void _startStreamExtraction() {
+              setState(() {
+                _isExtracting = true;
+                _nativeReady = false;
+              });
+
+              final targetUrl = _embedUrls[_serverIndex];
+
+              _extractorController = WebViewController()
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
-                ..setUserAgent('Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
+                ..setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
                 ..setBackgroundColor(Colors.black)
-                ..loadRequest(Uri.parse(_servers[_currentServer]['url']!));
-            }}
+                ..addJavaScriptChannel(
+                  'NativeSniffer',
+                  onMessageReceived: (JavaScriptMessage msg) {
+                    final raw = msg.message;
+                    if (raw.isNotEmpty && (raw.contains('.m3u8') || raw.contains('.mp4'))) {
+                      _initNativeChewie(raw);
+                    }
+                  },
+                )
+                ..setNavigationDelegate(
+                  NavigationDelegate(
+                    onNavigationRequest: (req) {
+                      final u = req.url.toLowerCase();
+                      if (u.contains('.m3u8') || u.contains('.mp4')) {
+                        _initNativeChewie(req.url);
+                      }
+                      if (u.contains('vidsrc') || u.contains('multiembed') || u.contains('vidlink') || u.contains('embed')) {
+                        return NavigationDecision.navigate;
+                      }
+                      return NavigationDecision.prevent;
+                    },
+                    onPageFinished: (_) {
+                      _injectAutoSnifferScript();
+                    },
+                  ),
+                )
+                ..loadRequest(Uri.parse(targetUrl));
+
+              Timer(const Duration(seconds: 7), () {
+                if (mounted && _isExtracting && !_nativeReady) {
+                  setState(() => _isExtracting = false);
+                }
+              });
+            }
+
+            void _injectAutoSnifferScript() {
+              const js = """
+                (function() {
+                  const origOpen = XMLHttpRequest.prototype.open;
+                  XMLHttpRequest.prototype.open = function(method, url) {
+                    if (url && (url.includes('.m3u8') || url.includes('.mp4'))) {
+                      NativeSniffer.postMessage(url);
+                    }
+                    return origOpen.apply(this, arguments);
+                  };
+
+                  const origFetch = window.fetch;
+                  window.fetch = function(url, init) {
+                    if (typeof url === 'string' && (url.includes('.m3u8') || url.includes('.mp4'))) {
+                      NativeSniffer.postMessage(url);
+                    }
+                    return origFetch.apply(this, arguments);
+                  };
+
+                  setInterval(function() {
+                    const v = document.querySelector('video');
+                    if (v) {
+                      if (v.src && (v.src.includes('.m3u8') || v.src.includes('.mp4'))) {
+                        NativeSniffer.postMessage(v.src);
+                      }
+                      if (v.paused) {
+                        v.play().catch(function(){});
+                      }
+                    }
+                    const btn = document.querySelector('.play-btn, .vjs-big-play-button, button[aria-label="Play"], #play');
+                    if (btn) btn.click();
+                  }, 400);
+                })();
+              """;
+              _extractorController?.runJavaScript(js).catchError((_) {});
+            }
+
+            Future<void> _initNativeChewie(String url) async {
+              if (_nativeReady) return;
+
+              _streamUrl = url;
+              try {
+                _videoPlayerController = VideoPlayerController.networkUrl(
+                  Uri.parse(url),
+                  httpHeaders: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Referer': _embedUrls[_serverIndex],
+                  },
+                );
+
+                await _videoPlayerController!.initialize();
+
+                _chewieController = ChewieController(
+                  videoPlayerController: _videoPlayerController!,
+                  autoPlay: true,
+                  looping: false,
+                  allowFullScreen: true,
+                  fullScreenByDefault: true,
+                  showControls: true,
+                  materialProgressColors: ChewieProgressColors(
+                    playedColor: Colors.redAccent,
+                    handleColor: Colors.redAccent,
+                    bufferedColor: Colors.white24,
+                    backgroundColor: Colors.white12,
+                  ),
+                  errorBuilder: (context, errorMessage) {
+                    return Center(
+                      child: Text(
+                        errorMessage,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    );
+                  },
+                );
+
+                if (mounted) {
+                  setState(() {
+                    _isExtracting = false;
+                    _nativeReady = true;
+                  });
+                }
+              } catch (_) {
+                if (mounted) {
+                  setState(() => _isExtracting = false);
+                }
+              }
+            }
 
             @override
-            void dispose() {{
+            void dispose() {
+              _videoPlayerController?.dispose();
+              _chewieController?.dispose();
               SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
               SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
               WakelockPlus.disable();
               super.dispose();
-            }}
+            }
 
             @override
-            Widget build(BuildContext context) {{
-              final srv = _servers[_currentServer];
+            Widget build(BuildContext context) {
               return Scaffold(
                 backgroundColor: Colors.black,
                 body: SafeArea(
                   child: Stack(
                     children: [
-                      WebViewWidget(controller: _controller),
+                      if (_nativeReady && _chewieController != null)
+                        Chewie(controller: _chewieController!)
+                      else if (_extractorController != null)
+                        WebViewWidget(controller: _extractorController!),
+
+                      if (_isExtracting)
+                        Container(
+                          color: Colors.black,
+                          child: Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const CircularProgressIndicator(color: Colors.redAccent),
+                                const SizedBox(height: 20),
+                                Text(
+                                  'Loading "${_resolvedTitle}"...',
+                                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                                ),
+                                const SizedBox(height: 6),
+                                const Text(
+                                  'Preparing High-Speed Native Stream',
+                                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+
                       Positioned(
                         top: 12,
                         left: 12,
@@ -293,46 +431,49 @@ jobs:
                           ),
                         ),
                       ),
+
                       Positioned(
                         top: 12,
                         right: 12,
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.redAccent,
-                            foregroundColor: Colors.white,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(20),
+                          onTap: () {
+                            setState(() {
+                              _serverIndex = (_serverIndex + 1) % _embedUrls.length;
+                            });
+                            _startStreamExtraction();
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.65),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: Colors.white24, width: 0.8),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.dns_rounded, color: Colors.redAccent, size: 14),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Server ${_serverIndex + 1}',
+                                  style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                              ],
+                            ),
                           ),
-                          icon: const Icon(Icons.dns_rounded, size: 16),
-                          label: Text(srv['name']!),
-                          onPressed: () {{
-                            setState(() {{
-                              _currentServer = (_currentServer + 1) % _servers.length;
-                            }});
-                            _controller.loadRequest(Uri.parse(_servers[_currentServer]['url']!));
-                          }},
                         ),
                       ),
                     ],
                   ),
                 ),
               );
-            }}
-          }}
-          """
-
-          destinations = set()
-          if target_player_file:
-              destinations.add(target_player_file)
-          destinations.add('lib/screens/player/player_screen.dart')
-          destinations.add('lib/screens/player_screen.dart')
-
-          for dest in destinations:
-              d = os.path.dirname(dest)
-              if d:
-                  os.makedirs(d, exist_ok=True)
-              with open(dest, 'w', encoding='utf-8') as fl:
-                  fl.write(player_code)
-              print(f"Replaced player in: {dest}")
+            }
+          }
           EOF
+
+          mkdir -p lib/screens/player
+          cp lib/screens/player_screen.dart lib/screens/player/player_screen.dart
 
       - name: Patch Plugins (SDK 34 & Proguard)
         run: |
@@ -354,14 +495,4 @@ jobs:
               }
           }
           EOF
-          fi
-
-      - name: Build APK
-        run: flutter build apk --release
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: jmovies-apk
-          path: build/app/outputs/flutter-apk/*.apk
-          
+   
