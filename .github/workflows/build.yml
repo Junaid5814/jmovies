@@ -38,18 +38,18 @@ jobs:
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
-      - name: Add Native Player Dependencies
+      - name: Add Dependencies
         run: |
-          flutter pub add carousel_slider:^5.0.0 webview_flutter wakelock_plus video_player chewie
+          flutter pub add carousel_slider:^5.0.0 webview_flutter wakelock_plus
           flutter pub get
 
       - name: Setup Tokens & .env File
         run: |
           KEY="dac07662083decf2616c4e68d22342c9"
           TOKEN="eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4"
-          cat << EOF > .env
-          TMDB_ACCESS_TOKEN=$TOKEN
-          TMDB_API_KEY=$KEY
+          cat << 'EOF' > .env
+          TMDB_ACCESS_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4
+          TMDB_API_KEY=dac07662083decf2616c4e68d22342c9
           BASE_URL=https://api.themoviedb.org/3
           IMAGE_BASE_URL=https://image.tmdb.org/t/p/w500
           EOF
@@ -88,18 +88,18 @@ jobs:
                       with open(p, 'w', encoding='utf-8') as fl: fl.write(t)
           EOF
 
-      - name: Inject Native Chewie Player Engine
+      - name: Hunt and Replace Broken Player Across Project
         run: |
-          cat << 'EOF' > lib/screens/player_screen.dart
-          import 'dart:async';
+          python3 - << 'EOF'
+          import os, re
+
+          player_template = """import 'dart:async';
           import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
-          import 'package:video_player/video_player.dart';
-          import 'package:chewie/chewie.dart';
           import 'package:webview_flutter/webview_flutter.dart';
           import 'package:wakelock_plus/wakelock_plus.dart';
 
-          class PlayerScreen extends StatefulWidget {
+          class {CLASS_NAME} extends StatefulWidget {
             final dynamic movie;
             final dynamic mediaItem;
             final dynamic media;
@@ -115,7 +115,7 @@ jobs:
             final int? episodeNumber;
             final int? episode;
 
-            const PlayerScreen({
+            const {CLASS_NAME}({
               super.key,
               this.movie,
               this.mediaItem,
@@ -133,7 +133,7 @@ jobs:
               this.episode,
             });
 
-            const PlayerScreen.forEpisode({
+            const {CLASS_NAME}.forEpisode({
               super.key,
               required int tmdbId,
               required String title,
@@ -152,18 +152,15 @@ jobs:
             }) : tmdbId = tmdbId, title = title, seasonNumber = seasonNumber, episodeNumber = episodeNumber;
 
             @override
-            State<PlayerScreen> createState() => _PlayerScreenState();
+            State<{CLASS_NAME}> createState() => _{CLASS_NAME}State();
           }
 
-          class _PlayerScreenState extends State<PlayerScreen> {
-            VideoPlayerController? _videoPlayerController;
-            ChewieController? _chewieController;
-            WebViewController? _extractorController;
-
-            bool _isExtracting = true;
-            bool _nativeReady = false;
-            String? _streamUrl;
-            int _serverIndex = 0;
+          class _{CLASS_NAME}State extends State<{CLASS_NAME}> {
+            late final WebViewController _controller;
+            int _currentServer = 0;
+            bool _showControls = true;
+            Timer? _hideTimer;
+            bool _isLoading = true;
 
             int get _resolvedId {
               if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
@@ -190,7 +187,7 @@ jobs:
                   } catch (_) {}
                 }
               }
-              return 'Playing';
+              return 'Playing Stream';
             }
 
             bool get _resolvedIsTv {
@@ -207,22 +204,22 @@ jobs:
               return false;
             }
 
-            List<String> get _embedUrls {
+            List<Map<String, String>> get _servers {
               final id = _resolvedId;
               final s = widget.seasonNumber ?? widget.season ?? 1;
               final e = widget.episodeNumber ?? widget.episode ?? 1;
 
               if (_resolvedIsTv) {
                 return [
-                  'https://vidsrc.cc/v2/embed/tv/$id/$s/$e',
-                  'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e',
-                  'https://vidlink.pro/tv/$id/$s/$e',
+                  {'name': 'Server 1 (VidLink Pro)', 'url': 'https://vidlink.pro/tv/$id/$s/$e'},
+                  {'name': 'Server 2 (MultiEmbed Hindi/Dub)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e'},
+                  {'name': 'Server 3 (VidSrc)', 'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e'},
                 ];
               } else {
                 return [
-                  'https://vidsrc.cc/v2/embed/movie/$id',
-                  'https://multiembed.mov/?video_id=$id&tmdb=1',
-                  'https://vidlink.pro/movie/$id',
+                  {'name': 'Server 1 (VidLink Pro)', 'url': 'https://vidlink.pro/movie/$id'},
+                  {'name': 'Server 2 (MultiEmbed Hindi/Dub)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1'},
+                  {'name': 'Server 3 (VidSrc)', 'url': 'https://vidsrc.cc/v2/embed/movie/$id'},
                 ];
               }
             }
@@ -237,148 +234,136 @@ jobs:
               SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
               WakelockPlus.enable();
 
-              _startStreamExtraction();
-            }
-
-            void _startStreamExtraction() {
-              setState(() {
-                _isExtracting = true;
-                _nativeReady = false;
-              });
-
-              final targetUrl = _embedUrls[_serverIndex];
-
-              _extractorController = WebViewController()
+              _controller = WebViewController()
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
-                ..setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+                ..setUserAgent('Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
                 ..setBackgroundColor(Colors.black)
-                ..addJavaScriptChannel(
-                  'NativeSniffer',
-                  onMessageReceived: (JavaScriptMessage msg) {
-                    final raw = msg.message;
-                    if (raw.isNotEmpty && (raw.contains('.m3u8') || raw.contains('.mp4'))) {
-                      _initNativeChewie(raw);
-                    }
-                  },
-                )
                 ..setNavigationDelegate(
                   NavigationDelegate(
-                    onNavigationRequest: (req) {
-                      final u = req.url.toLowerCase();
-                      if (u.contains('.m3u8') || u.contains('.mp4')) {
-                        _initNativeChewie(req.url);
+                    onPageStarted: (_) {
+                      if (mounted) setState(() => _isLoading = true);
+                    },
+                    onPageFinished: (_) {
+                      if (mounted) setState(() => _isLoading = false);
+                      _injectAutoPlay();
+                    },
+                    onWebResourceError: (error) {
+                      // Auto Failover to next server on DNS or connection error
+                      if (_currentServer < _servers.length - 1) {
+                        _switchServer(_currentServer + 1);
                       }
-                      if (u.contains('vidsrc') || u.contains('multiembed') || u.contains('vidlink') || u.contains('embed')) {
+                    },
+                    onNavigationRequest: (req) {
+                      final url = req.url.toLowerCase();
+                      if (url.startsWith('blob:') ||
+                          url.startsWith('about:') ||
+                          url.contains('vidlink') ||
+                          url.contains('multiembed') ||
+                          url.contains('vidsrc') ||
+                          url.contains('m3u8') ||
+                          url.contains('mp4')) {
                         return NavigationDecision.navigate;
                       }
                       return NavigationDecision.prevent;
                     },
-                    onPageFinished: (_) {
-                      _injectAutoSnifferScript();
-                    },
                   ),
                 )
-                ..loadRequest(Uri.parse(targetUrl));
+                ..loadRequest(Uri.parse(_servers[_currentServer]['url']!));
 
-              Timer(const Duration(seconds: 7), () {
-                if (mounted && _isExtracting && !_nativeReady) {
-                  setState(() => _isExtracting = false);
-                }
+              _startHideTimer();
+            }
+
+            void _injectAutoPlay() {
+              const js = '''
+                setInterval(function() {
+                  const btn = document.querySelector('.play-btn, .vjs-big-play-button, button[aria-label="Play"], #play, .jw-display-icon-display');
+                  if (btn) btn.click();
+                  const v = document.querySelector('video');
+                  if (v && v.paused) v.play().catch(function(){});
+                }, 500);
+              ''';
+              _controller.runJavaScript(js).catchError((_) {});
+            }
+
+            void _startHideTimer() {
+              _hideTimer?.cancel();
+              _hideTimer = Timer(const Duration(seconds: 4), () {
+                if (mounted) setState(() => _showControls = false);
               });
             }
 
-            void _injectAutoSnifferScript() {
-              const js = """
-                (function() {
-                  const origOpen = XMLHttpRequest.prototype.open;
-                  XMLHttpRequest.prototype.open = function(method, url) {
-                    if (url && (url.includes('.m3u8') || url.includes('.mp4'))) {
-                      NativeSniffer.postMessage(url);
-                    }
-                    return origOpen.apply(this, arguments);
-                  };
-
-                  const origFetch = window.fetch;
-                  window.fetch = function(url, init) {
-                    if (typeof url === 'string' && (url.includes('.m3u8') || url.includes('.mp4'))) {
-                      NativeSniffer.postMessage(url);
-                    }
-                    return origFetch.apply(this, arguments);
-                  };
-
-                  setInterval(function() {
-                    const v = document.querySelector('video');
-                    if (v) {
-                      if (v.src && (v.src.includes('.m3u8') || v.src.includes('.mp4'))) {
-                        NativeSniffer.postMessage(v.src);
-                      }
-                      if (v.paused) {
-                        v.play().catch(function(){});
-                      }
-                    }
-                    const btn = document.querySelector('.play-btn, .vjs-big-play-button, button[aria-label="Play"], #play');
-                    if (btn) btn.click();
-                  }, 400);
-                })();
-              """;
-              _extractorController?.runJavaScript(js).catchError((_) {});
+            void _toggleControls() {
+              setState(() => _showControls = !_showControls);
+              if (_showControls) _startHideTimer();
             }
 
-            Future<void> _initNativeChewie(String url) async {
-              if (_nativeReady) return;
+            void _switchServer(int idx) {
+              if (idx == _currentServer) return;
+              setState(() {
+                _currentServer = idx;
+                _isLoading = true;
+              });
+              _controller.loadRequest(Uri.parse(_servers[idx]['url']!));
+              _startHideTimer();
+            }
 
-              _streamUrl = url;
-              try {
-                _videoPlayerController = VideoPlayerController.networkUrl(
-                  Uri.parse(url),
-                  httpHeaders: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Referer': _embedUrls[_serverIndex],
-                  },
-                );
-
-                await _videoPlayerController!.initialize();
-
-                _chewieController = ChewieController(
-                  videoPlayerController: _videoPlayerController!,
-                  autoPlay: true,
-                  looping: false,
-                  allowFullScreen: true,
-                  fullScreenByDefault: true,
-                  showControls: true,
-                  materialProgressColors: ChewieProgressColors(
-                    playedColor: Colors.redAccent,
-                    handleColor: Colors.redAccent,
-                    bufferedColor: Colors.white24,
-                    backgroundColor: Colors.white12,
-                  ),
-                  errorBuilder: (context, errorMessage) {
-                    return Center(
-                      child: Text(
-                        errorMessage,
-                        style: const TextStyle(color: Colors.white),
+            void _showServerSheet() {
+              _hideTimer?.cancel();
+              showModalBottomSheet(
+                context: context,
+                backgroundColor: const Color(0xFF141414),
+                shape: const RoundedRectangleBorder(
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+                ),
+                builder: (ctx) {
+                  return SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('Select Video Server', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                              IconButton(icon: const Icon(Icons.close, color: Colors.white54, size: 20), onPressed: () => Navigator.pop(ctx)),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          ...List.generate(_servers.length, (idx) {
+                            final isSel = idx == _currentServer;
+                            return Container(
+                              margin: const EdgeInsets.symmetric(vertical: 4),
+                              decoration: BoxDecoration(
+                                color: isSel ? Colors.redAccent.withOpacity(0.15) : Colors.white.withOpacity(0.04),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: isSel ? Colors.redAccent : Colors.transparent),
+                              ),
+                              child: ListTile(
+                                dense: true,
+                                leading: Icon(Icons.dns_rounded, color: isSel ? Colors.redAccent : Colors.white70, size: 20),
+                                title: Text(_servers[idx]['name']!, style: TextStyle(color: isSel ? Colors.redAccent : Colors.white, fontSize: 14, fontWeight: isSel ? FontWeight.bold : FontWeight.normal)),
+                                trailing: isSel ? const Icon(Icons.check_circle, color: Colors.redAccent, size: 18) : null,
+                                onTap: () {
+                                  Navigator.pop(ctx);
+                                  _switchServer(idx);
+                                },
+                              ),
+                            );
+                          }),
+                          const SizedBox(height: 12),
+                        ],
                       ),
-                    );
-                  },
-                );
-
-                if (mounted) {
-                  setState(() {
-                    _isExtracting = false;
-                    _nativeReady = true;
-                  });
-                }
-              } catch (_) {
-                if (mounted) {
-                  setState(() => _isExtracting = false);
-                }
-              }
+                    ),
+                  );
+                },
+              ).then((_) => _startHideTimer());
             }
 
             @override
             void dispose() {
-              _videoPlayerController?.dispose();
-              _chewieController?.dispose();
+              _hideTimer?.cancel();
               SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
               SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
               WakelockPlus.disable();
@@ -392,12 +377,16 @@ jobs:
                 body: SafeArea(
                   child: Stack(
                     children: [
-                      if (_nativeReady && _chewieController != null)
-                        Chewie(controller: _chewieController!)
-                      else if (_extractorController != null)
-                        WebViewWidget(controller: _extractorController!),
+                      WebViewWidget(controller: _controller),
 
-                      if (_isExtracting)
+                      Positioned.fill(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.translucent,
+                          onTap: _toggleControls,
+                        ),
+                      ),
+
+                      if (_isLoading)
                         Container(
                           color: Colors.black,
                           child: Center(
@@ -405,103 +394,59 @@ jobs:
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 const CircularProgressIndicator(color: Colors.redAccent),
-                                const SizedBox(height: 20),
-                                Text(
-                                  'Loading "${_resolvedTitle}"...',
-                                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                                ),
-                                const SizedBox(height: 6),
-                                const Text(
-                                  'Preparing High-Speed Native Stream',
-                                  style: TextStyle(color: Colors.white54, fontSize: 12),
-                                ),
+                                const SizedBox(height: 16),
+                                Text('Connecting to ${_servers[_currentServer]['name']}...', style: const TextStyle(color: Colors.white70, fontSize: 13)),
                               ],
                             ),
                           ),
                         ),
 
-                      Positioned(
-                        top: 12,
-                        left: 12,
-                        child: CircleAvatar(
-                          backgroundColor: Colors.black54,
-                          child: IconButton(
-                            icon: const Icon(Icons.arrow_back, color: Colors.white),
-                            onPressed: () => Navigator.pop(context),
-                          ),
-                        ),
-                      ),
-
-                      Positioned(
-                        top: 12,
-                        right: 12,
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(20),
-                          onTap: () {
-                            setState(() {
-                              _serverIndex = (_serverIndex + 1) % _embedUrls.length;
-                            });
-                            _startStreamExtraction();
-                          },
+                      AnimatedOpacity(
+                        duration: const Duration(milliseconds: 300),
+                        opacity: _showControls ? 1.0 : 0.0,
+                        child: IgnorePointer(
+                          ignoring: !_showControls,
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                             decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.65),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(color: Colors.white24, width: 0.8),
+                              gradient: LinearGradient(
+                                colors: [Colors.black.withOpacity(0.85), Colors.transparent],
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                              ),
                             ),
                             child: Row(
-                              mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Icon(Icons.dns_rounded, color: Colors.redAccent, size: 14),
-                                const SizedBox(width: 6),
-                                Text(
-                                  'Server ${_serverIndex + 1}',
-                                  style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                                InkWell(
+                                  borderRadius: BorderRadius.circular(20),
+                                  onTap: () => Navigator.pop(context),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withOpacity(0.4),
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 18),
+                                  ),
                                 ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }
-          }
-          EOF
-
-          mkdir -p lib/screens/player
-          cp lib/screens/player_screen.dart lib/screens/player/player_screen.dart
-
-      - name: Patch Plugins (SDK 34 & Proguard)
-        run: |
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
-          find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
-
-          if [ -f "android/build.gradle" ]; then
-            cat << 'EOF' >> android/build.gradle
-
-          subprojects {
-              afterEvaluate { project ->
-                  if (project.hasProperty('android')) {
-                      project.android {
-                          compileSdkVersion 34
-                      }
-                  }
-              }
-          }
-          EOF
-          fi
-
-      - name: Build APK
-        run: flutter build apk --release
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: jmovies-apk
-          path: build/app/outputs/flutter-apk/*.apk
+                                const SizedBox(width: 14),
+                                Expanded(
+                                  child: Text(
+                                    _resolvedTitle,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+                                  ),
+                                ),
+                                InkWell(
+                                  borderRadius: BorderRadius.circular(20),
+                                  onTap: _showServerSheet,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withOpacity(0.55),
+                                      borderRadius: BorderRadius.circular(20),
+                                      border: Border.all(color: Colors.white24, width: 0.8),
+                                    ),
+                                    child: Row(
+                                 
