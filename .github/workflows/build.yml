@@ -40,7 +40,7 @@ jobs:
 
       - name: Pin Safe Plugins & Dependencies
         run: |
-          python3 -c "c=open('pubspec.yaml').read(); open('pubspec.yaml','w').write(c.replace('dependency_overrides:','dependency_overrides:\n  sqflite_android: 2.4.3') if 'dependency_overrides:' in c else c+'\ndependency_overrides:\n  sqflite_android: 2.4.3\n')"
+          python3 -c "c=open('pubspec.yaml').read(); open('pubspec.yaml','w').write(c.replace('dependency_overrides:','dependency_overrides:\n  sqflite_android: 2.3.3') if 'dependency_overrides:' in c else c+'\ndependency_overrides:\n  sqflite_android: 2.3.3\n')"
           flutter pub add carousel_slider:^5.0.0 webview_flutter wakelock_plus
           flutter pub get
 
@@ -76,7 +76,7 @@ jobs:
                       if c[i] == '(': cnt += 1
                       elif c[i] == ')':
                         cnt -= 1
-                        if cnt == 0: e = i + 1; break
+                        if count == 0: e = i + 1; break
                     if e != -1: open(p, 'w', encoding='utf-8').write(c[:s] + b + c[e:])
           EOF
 
@@ -191,4 +191,3 @@ jobs:
         with:
           name: jmovies-apk
           path: build/app/outputs/flutter-apk/*.apk
-          
