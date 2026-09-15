@@ -88,33 +88,25 @@ jobs:
                       with open(p, 'w', encoding='utf-8') as fl: fl.write(t)
           EOF
 
-      - name: Inject Auto-Play Clean Player
+      - name: Hunt and Replace Broken Player Across Entire Project
         run: |
-          mkdir -p lib/screens/player
-          cat << 'EOF' > lib/screens/player/player_screen.dart
-          import 'dart:async';
+          python3 - << 'EOF'
+          import os, re
+
+          player_template = """import 'dart:async';
           import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
           import 'package:webview_flutter/webview_flutter.dart';
           import 'package:wakelock_plus/wakelock_plus.dart';
 
-          class PlayerScreen extends StatefulWidget {
-            final dynamic movie;
-            final dynamic mediaItem;
-            final dynamic media;
-            final dynamic item;
-            final int? tmdbId;
-            final int? id;
-            final String? title;
-            final String? name;
+          class __CLASS_NAME__ extends StatefulWidget {
+            final dynamic movie, mediaItem, media, item;
+            final int? tmdbId, id, seasonNumber, season, episodeNumber, episode;
+            final String? title, name;
             final bool isTv;
             final bool? isMovie;
-            final int? seasonNumber;
-            final int? season;
-            final int? episodeNumber;
-            final int? episode;
 
-            const PlayerScreen({
+            const __CLASS_NAME__({
               super.key,
               this.movie,
               this.mediaItem,
@@ -132,7 +124,7 @@ jobs:
               this.episode,
             });
 
-            const PlayerScreen.forEpisode({
+            const __CLASS_NAME__.forEpisode({
               super.key,
               required int tmdbId,
               required String title,
@@ -151,10 +143,10 @@ jobs:
             }) : tmdbId = tmdbId, title = title, seasonNumber = seasonNumber, episodeNumber = episodeNumber;
 
             @override
-            State<PlayerScreen> createState() => _PlayerScreenState();
+            State<__CLASS_NAME__> createState() => ___CLASS_NAME__State();
           }
 
-          class _PlayerScreenState extends State<PlayerScreen> {
+          class ___CLASS_NAME__State extends State<__CLASS_NAME__> {
             late final WebViewController _controller;
             int _currentServer = 0;
             bool _showControls = true;
@@ -267,7 +259,7 @@ jobs:
             }
 
             void _injectAutoTrigger() {
-              const js = """
+              const js = '''
                 (function() {
                   window.open = function() { return null; };
                   setInterval(function() {
@@ -277,7 +269,7 @@ jobs:
                     if (v && v.paused) v.play().catch(function(){});
                   }, 350);
                 })();
-              """;
+              ''';
               _controller.runJavaScript(js).catchError((_) {});
             }
 
@@ -462,15 +454,60 @@ jobs:
               );
             }
           }
+          """
+
+          # 1. Clean all dead domains across entire lib folder
+          dead_domains = ['vidsrc.to', 'vidsrc.me', 'vidsrc.xyz', 'vidsrc.pm', 'vidsrc.net', '2embed.to', '2embed.cc']
+          for root, _, files in os.walk('lib'):
+              for f in files:
+                  if f.endswith('.dart'):
+                      p = os.path.join(root, f)
+                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
+                          c = fl.read()
+                      orig = c
+                      for d in dead_domains:
+                          c = c.replace(d, 'vidlink.pro')
+                      if c != orig:
+                          with open(p, 'w', encoding='utf-8') as fl:
+                              fl.write(c)
+                          print(f"Replaced dead domains in: {p}")
+
+          # 2. Hunt every file that has the exact broken player error screen
+          targets = []
+          for root, _, files in os.walk('lib'):
+              for f in files:
+                  if f.endswith('.dart'):
+                      p = os.path.join(root, f)
+                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
+                          c = fl.read()
+                      if ('Could not load the player' in c) or ('ERR_NAME_NOT_RESOLVED' in c) or ('net::' in c and 'Retry' in c):
+                          targets.append(p)
+
+          print(f"Broken player files detected: {targets}")
+
+          for p in targets:
+              with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
+                  c = fl.read()
+              m = re.search(r'class\s+([A-Za-z0-9_]+)\s+extends\s+StatefulWidget', c)
+              class_name = m.group(1) if m else 'PlayerScreen'
+              print(f"Replacing broken player at: {p} (Using Class: {class_name})")
+              code = player_template.replace('__CLASS_NAME__', class_name)
+              with open(p, 'w', encoding='utf-8') as fl:
+                  fl.write(code)
+
+          # Also write to standard player locations
+          for loc in ['lib/screens/player/player_screen.dart', 'lib/screens/player_screen.dart']:
+              os.makedirs(os.path.dirname(loc), exist_ok=True)
+              code = player_template.replace('__CLASS_NAME__', 'PlayerScreen')
+              with open(loc, 'w', encoding='utf-8') as fl:
+                  fl.write(code)
           EOF
-          cp lib/screens/player/player_screen.dart lib/screens/player_screen.dart 2>/dev/null || true
 
       - name: Patch Android SDK 35, Proguard & Java Baklava Fix
         run: |
           python3 - << 'EOF'
           import os, re
 
-          # 1. Force compileSdk 35 inside android project
           for root, _, files in os.walk('android'):
               for f in files:
                   if f.startswith('build.gradle'):
@@ -484,7 +521,6 @@ jobs:
                       with open(p, 'w', encoding='utf-8') as fl:
                           fl.write(c)
 
-          # 2. Force compileSdk 35 in pub-cache plugins
           cache_dir = os.path.expanduser('~/.pub-cache')
           for root, _, files in os.walk(cache_dir):
               for f in files:
@@ -498,7 +534,6 @@ jobs:
                       with open(p, 'w', encoding='utf-8') as fl:
                           fl.write(c)
 
-          # 3. Auto-patch Java Baklava symbols
           for root, _, files in os.walk(cache_dir):
               for f in files:
                   if f.endswith('.java'):
@@ -542,7 +577,6 @@ jobs:
           mkdir -p build/app/outputs/flutter-apk
           TARGET_APK="build/app/outputs/flutter-apk/app-release.apk"
 
-          # Official Android SDK Build-Tools for zipalign & apksigner
           BT_DIR=$(ls -d /usr/local/lib/android/sdk/build-tools/* | sort -V | tail -n 1)
           echo "Using Android Build-Tools from: $BT_DIR"
 
