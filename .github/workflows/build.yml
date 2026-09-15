@@ -528,38 +528,33 @@ jobs:
           }
           EOF
 
-      - name: Build and Package APK
+      - name: Build and Sign Valid APK (v2 & v3 Scheme)
         run: |
           flutter build apk --release || true
 
+          APK_FILE=$(find android build -name "*.apk" 2>/dev/null | grep -E "release|app" | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            cd android && ./gradlew assembleRelease && cd ..
+            APK_FILE=$(find android build -name "*.apk" 2>/dev/null | grep -E "release|app" | head -n 1)
+          fi
+          echo "Found APK: $APK_FILE"
+
           mkdir -p build/app/outputs/flutter-apk
+          TARGET_APK="build/app/outputs/flutter-apk/app-release.apk"
 
-          echo "Searching for generated APK files..."
-          find build android -name "*.apk" -ls
+          # Official Android SDK Build-Tools for zipalign & apksigner
+          BT_DIR=$(ls -d /usr/local/lib/android/sdk/build-tools/* | sort -V | tail -n 1)
+          echo "Using Android Build-Tools from: $BT_DIR"
 
-          APK_FOUND=$(find build android -name "*release*.apk" 2>/dev/null | head -n 1)
-          if [ -z "$APK_FOUND" ]; then
-            APK_FOUND=$(find build android -name "*.apk" 2>/dev/null | head -n 1)
+          if [ ! -f ~/.android/debug.keystore ]; then
+            mkdir -p ~/.android
+            keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-          if [ -n "$APK_FOUND" ]; then
-            echo "Selected APK: $APK_FOUND"
-            cp "$APK_FOUND" build/app/outputs/flutter-apk/app-release.apk
-
-            if [ ! -f ~/.android/debug.keystore ]; then
-              mkdir -p ~/.android
-              keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-            fi
-            jarsigner -keystore ~/.android/debug.keystore -storepass android build/app/outputs/flutter-apk/app-release.apk androiddebugkey || true
-            echo "APK ready for release!"
-          else
-            echo "No APK was found, executing direct Gradle assemble..."
-            cd android
-            ./gradlew assembleRelease
-            cd ..
-            APK_FOUND=$(find build android -name "*.apk" 2>/dev/null | head -n 1)
-            cp "$APK_FOUND" build/app/outputs/flutter-apk/app-release.apk
-          fi
+          $BT_DIR/zipalign -f -p 4 "$APK_FILE" aligned.apk
+          $BT_DIR/apksigner sign --ks ~/.android/debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android --out "$TARGET_APK" aligned.apk
+          $BT_DIR/apksigner verify --verbose "$TARGET_APK"
+          echo "APK successfully verified and signed with v2/v3 signatures!"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
