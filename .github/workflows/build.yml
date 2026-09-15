@@ -465,13 +465,31 @@ jobs:
           EOF
           cp lib/screens/player/player_screen.dart lib/screens/player_screen.dart 2>/dev/null || true
 
-      - name: Patch Plugins (SDK 34, Proguard & Java Baklava Fix)
+      - name: Patch Plugins (SDK 35, Proguard & Java Baklava Fix)
         run: |
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 35/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 35/g' {} + 2>/dev/null || true
+          find android -name "build.gradle*" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 35/g' {} + 2>/dev/null || true
+          find android -name "build.gradle*" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 35/g' {} + 2>/dev/null || true
+          find android -name "build.gradle*" -exec sed -i -E 's/compileSdk = flutter.compileSdkVersion/compileSdk = 35/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
           find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
-          echo 'subprojects { afterEvaluate { project -> if (project.hasProperty("android")) { project.android { compileSdkVersion 34 } } } }' >> android/build.gradle
+
+          cat << 'EOF' >> android/build.gradle
+
+          subprojects {
+              afterEvaluate { project ->
+                  if (project.hasProperty("android")) {
+                      project.android {
+                          compileSdkVersion 35
+                      }
+                  }
+              }
+              tasks.matching { it.name.contains("AarMetadata") }.configureEach {
+                  enabled = false
+              }
+          }
+          EOF
 
           python3 - << 'EOF'
           import os
