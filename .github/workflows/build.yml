@@ -38,6 +38,19 @@ jobs:
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
+      - name: Pin Safe Plugin Versions
+        run: |
+          python3 - << 'EOF'
+          with open('pubspec.yaml', 'r') as f:
+              c = f.read()
+          if 'dependency_overrides:' in c:
+              c = c.replace('dependency_overrides:', 'dependency_overrides:\n  sqflite_android: 2.4.3')
+          else:
+              c += '\ndependency_overrides:\n  sqflite_android: 2.4.3\n'
+          with open('pubspec.yaml', 'w') as f:
+              f.write(c)
+          EOF
+
       - name: Add Dependencies
         run: |
           flutter pub add carousel_slider:^5.0.0 webview_flutter wakelock_plus
@@ -438,46 +451,4 @@ jobs:
                                       color: Colors.black.withOpacity(0.55),
                                       borderRadius: BorderRadius.circular(20),
                                       border: Border.all(color: Colors.white24, width: 0.8),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(Icons.tune_rounded, color: Colors.redAccent, size: 14),
-                                        const SizedBox(width: 6),
-                                        Text('Server ${_currentServer + 1}', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-                                        const SizedBox(width: 4),
-                                        const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 14),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }
-          }
-          EOF
-          cp lib/screens/player/player_screen.dart lib/screens/player_screen.dart 2>/dev/null || true
-
-      - name: Patch Plugins (SDK 34 & Proguard)
-        run: |
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
-          find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
-          echo 'subprojects { afterEvaluate { project -> if (project.hasProperty("android")) { project.android { compileSdkVersion 34 } } } }' >> android/build.gradle
-
-      - name: Build APK
-        run: flutter build apk --release
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: jmovies-apk
-          path: build/app/outputs/flutter-apk/*.apk
+            
