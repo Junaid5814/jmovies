@@ -38,19 +38,6 @@ jobs:
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
-      - name: Pin Safe Plugin Versions
-        run: |
-          python3 - << 'EOF'
-          with open('pubspec.yaml', 'r') as f:
-              c = f.read()
-          if 'dependency_overrides:' in c:
-              c = c.replace('dependency_overrides:', 'dependency_overrides:\n  sqflite_android: "<2.4.0"')
-          else:
-              c += '\ndependency_overrides:\n  sqflite_android: "<2.4.0"\n'
-          with open('pubspec.yaml', 'w') as f:
-              f.write(c)
-          EOF
-
       - name: Add Dependencies
         run: |
           flutter pub add carousel_slider:^5.0.0 webview_flutter wakelock_plus
@@ -478,13 +465,30 @@ jobs:
           EOF
           cp lib/screens/player/player_screen.dart lib/screens/player_screen.dart 2>/dev/null || true
 
-      - name: Patch Plugins (SDK 34 & Proguard)
+      - name: Patch Plugins (SDK 34, Proguard & Java Baklava Fix)
         run: |
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
           find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
           echo 'subprojects { afterEvaluate { project -> if (project.hasProperty("android")) { project.android { compileSdkVersion 34 } } } }' >> android/build.gradle
+
+          python3 - << 'EOF'
+          import os
+          for root, _, files in os.walk(os.path.expanduser('~/.pub-cache')):
+              for f in files:
+                  if f.endswith('.java'):
+                      p = os.path.join(root, f)
+                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
+                          c = fl.read()
+                      if 'BAKLAVA' in c or 'Locale.of' in c or 'thread.threadId()' in c:
+                          c = c.replace('Build.VERSION_CODES.BAKLAVA', '999')
+                          c = c.replace('Locale.of(language, country, variant)', 'new Locale(language, country, variant)')
+                          c = c.replace('thread.threadId()', 'thread.getId()')
+                          with open(p, 'w', encoding='utf-8') as fl:
+                              fl.write(c)
+                          print(f"Successfully auto-patched Java file: {p}")
+          EOF
 
       - name: Build APK
         run: flutter build apk --release
