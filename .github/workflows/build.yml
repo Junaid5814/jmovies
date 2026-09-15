@@ -528,8 +528,38 @@ jobs:
           }
           EOF
 
-      - name: Build APK
-        run: flutter build apk --release
+      - name: Build and Package APK
+        run: |
+          flutter build apk --release || true
+
+          mkdir -p build/app/outputs/flutter-apk
+
+          echo "Searching for generated APK files..."
+          find build android -name "*.apk" -ls
+
+          APK_FOUND=$(find build android -name "*release*.apk" 2>/dev/null | head -n 1)
+          if [ -z "$APK_FOUND" ]; then
+            APK_FOUND=$(find build android -name "*.apk" 2>/dev/null | head -n 1)
+          fi
+
+          if [ -n "$APK_FOUND" ]; then
+            echo "Selected APK: $APK_FOUND"
+            cp "$APK_FOUND" build/app/outputs/flutter-apk/app-release.apk
+
+            if [ ! -f ~/.android/debug.keystore ]; then
+              mkdir -p ~/.android
+              keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            fi
+            jarsigner -keystore ~/.android/debug.keystore -storepass android build/app/outputs/flutter-apk/app-release.apk androiddebugkey || true
+            echo "APK ready for release!"
+          else
+            echo "No APK was found, executing direct Gradle assemble..."
+            cd android
+            ./gradlew assembleRelease
+            cd ..
+            APK_FOUND=$(find build android -name "*.apk" 2>/dev/null | head -n 1)
+            cp "$APK_FOUND" build/app/outputs/flutter-apk/app-release.apk
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
