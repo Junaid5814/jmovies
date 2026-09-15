@@ -47,9 +47,9 @@ jobs:
         run: |
           KEY="dac07662083decf2616c4e68d22342c9"
           TOKEN="eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4"
-          cat << 'EOF' > .env
-          TMDB_ACCESS_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4
-          TMDB_API_KEY=dac07662083decf2616c4e68d22342c9
+          cat << EOF > .env
+          TMDB_ACCESS_TOKEN=$TOKEN
+          TMDB_API_KEY=$KEY
           BASE_URL=https://api.themoviedb.org/3
           IMAGE_BASE_URL=https://image.tmdb.org/t/p/w500
           EOF
@@ -88,18 +88,17 @@ jobs:
                       with open(p, 'w', encoding='utf-8') as fl: fl.write(t)
           EOF
 
-      - name: Hunt and Replace Broken Player Across Project
+      - name: Inject Auto-Play Clean Player
         run: |
-          python3 - << 'EOF'
-          import os, re
-
-          player_template = """import 'dart:async';
+          mkdir -p lib/screens/player
+          cat << 'EOF' > lib/screens/player/player_screen.dart
+          import 'dart:async';
           import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
           import 'package:webview_flutter/webview_flutter.dart';
           import 'package:wakelock_plus/wakelock_plus.dart';
 
-          class {CLASS_NAME} extends StatefulWidget {
+          class PlayerScreen extends StatefulWidget {
             final dynamic movie;
             final dynamic mediaItem;
             final dynamic media;
@@ -115,7 +114,7 @@ jobs:
             final int? episodeNumber;
             final int? episode;
 
-            const {CLASS_NAME}({
+            const PlayerScreen({
               super.key,
               this.movie,
               this.mediaItem,
@@ -133,7 +132,7 @@ jobs:
               this.episode,
             });
 
-            const {CLASS_NAME}.forEpisode({
+            const PlayerScreen.forEpisode({
               super.key,
               required int tmdbId,
               required String title,
@@ -152,10 +151,10 @@ jobs:
             }) : tmdbId = tmdbId, title = title, seasonNumber = seasonNumber, episodeNumber = episodeNumber;
 
             @override
-            State<{CLASS_NAME}> createState() => _{CLASS_NAME}State();
+            State<PlayerScreen> createState() => _PlayerScreenState();
           }
 
-          class _{CLASS_NAME}State extends State<{CLASS_NAME}> {
+          class _PlayerScreenState extends State<PlayerScreen> {
             late final WebViewController _controller;
             int _currentServer = 0;
             bool _showControls = true;
@@ -187,7 +186,7 @@ jobs:
                   } catch (_) {}
                 }
               }
-              return 'Playing Stream';
+              return 'Streaming';
             }
 
             bool get _resolvedIsTv {
@@ -211,15 +210,15 @@ jobs:
 
               if (_resolvedIsTv) {
                 return [
-                  {'name': 'Server 1 (VidLink Pro)', 'url': 'https://vidlink.pro/tv/$id/$s/$e'},
-                  {'name': 'Server 2 (MultiEmbed Hindi/Dub)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e'},
-                  {'name': 'Server 3 (VidSrc)', 'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e'},
+                  {'name': 'Server 1 (VidLink AutoPlay)', 'url': 'https://vidlink.pro/tv/$id/$s/$e?autoplay=true'},
+                  {'name': 'Server 2 (MultiEmbed Hindi/Dub)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e&autoplay=1'},
+                  {'name': 'Server 3 (VidSrc Backup)', 'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e'},
                 ];
               } else {
                 return [
-                  {'name': 'Server 1 (VidLink Pro)', 'url': 'https://vidlink.pro/movie/$id'},
-                  {'name': 'Server 2 (MultiEmbed Hindi/Dub)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1'},
-                  {'name': 'Server 3 (VidSrc)', 'url': 'https://vidsrc.cc/v2/embed/movie/$id'},
+                  {'name': 'Server 1 (VidLink AutoPlay)', 'url': 'https://vidlink.pro/movie/$id?autoplay=true'},
+                  {'name': 'Server 2 (MultiEmbed Hindi/Dub)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&autoplay=1'},
+                  {'name': 'Server 3 (VidSrc Backup)', 'url': 'https://vidsrc.cc/v2/embed/movie/$id'},
                 ];
               }
             }
@@ -245,13 +244,7 @@ jobs:
                     },
                     onPageFinished: (_) {
                       if (mounted) setState(() => _isLoading = false);
-                      _injectAutoPlay();
-                    },
-                    onWebResourceError: (error) {
-                      // Auto Failover to next server on DNS or connection error
-                      if (_currentServer < _servers.length - 1) {
-                        _switchServer(_currentServer + 1);
-                      }
+                      _injectAutoTrigger();
                     },
                     onNavigationRequest: (req) {
                       final url = req.url.toLowerCase();
@@ -273,15 +266,18 @@ jobs:
               _startHideTimer();
             }
 
-            void _injectAutoPlay() {
-              const js = '''
-                setInterval(function() {
-                  const btn = document.querySelector('.play-btn, .vjs-big-play-button, button[aria-label="Play"], #play, .jw-display-icon-display');
-                  if (btn) btn.click();
-                  const v = document.querySelector('video');
-                  if (v && v.paused) v.play().catch(function(){});
-                }, 500);
-              ''';
+            void _injectAutoTrigger() {
+              const js = """
+                (function() {
+                  window.open = function() { return null; };
+                  setInterval(function() {
+                    const btn = document.querySelector('.play-btn, .vjs-big-play-button, button[aria-label="Play"], #play, .jw-display-icon-display, svg[data-icon="play"]');
+                    if (btn) btn.click();
+                    const v = document.querySelector('video');
+                    if (v && v.paused) v.play().catch(function(){});
+                  }, 350);
+                })();
+              """;
               _controller.runJavaScript(js).catchError((_) {});
             }
 
@@ -295,16 +291,6 @@ jobs:
             void _toggleControls() {
               setState(() => _showControls = !_showControls);
               if (_showControls) _startHideTimer();
-            }
-
-            void _switchServer(int idx) {
-              if (idx == _currentServer) return;
-              setState(() {
-                _currentServer = idx;
-                _isLoading = true;
-              });
-              _controller.loadRequest(Uri.parse(_servers[idx]['url']!));
-              _startHideTimer();
             }
 
             void _showServerSheet() {
@@ -326,7 +312,7 @@ jobs:
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              const Text('Select Video Server', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                              const Text('Select Stream Server', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
                               IconButton(icon: const Icon(Icons.close, color: Colors.white54, size: 20), onPressed: () => Navigator.pop(ctx)),
                             ],
                           ),
@@ -347,7 +333,12 @@ jobs:
                                 trailing: isSel ? const Icon(Icons.check_circle, color: Colors.redAccent, size: 18) : null,
                                 onTap: () {
                                   Navigator.pop(ctx);
-                                  _switchServer(idx);
+                                  setState(() {
+                                    _currentServer = idx;
+                                    _isLoading = true;
+                                  });
+                                  _controller.loadRequest(Uri.parse(_servers[idx]['url']!));
+                                  _startHideTimer();
                                 },
                               ),
                             );
@@ -449,4 +440,44 @@ jobs:
                                       border: Border.all(color: Colors.white24, width: 0.8),
                                     ),
                                     child: Row(
-                                 
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.tune_rounded, color: Colors.redAccent, size: 14),
+                                        const SizedBox(width: 6),
+                                        Text('Server ${_currentServer + 1}', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                                        const SizedBox(width: 4),
+                                        const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 14),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+          EOF
+          cp lib/screens/player/player_screen.dart lib/screens/player_screen.dart 2>/dev/null || true
+
+      - name: Patch Plugins (SDK 34 & Proguard)
+        run: |
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
+          find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
+          echo 'subprojects { afterEvaluate { project -> if (project.hasProperty("android")) { project.android { compileSdkVersion 34 } } } }' >> android/build.gradle
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: jmovies-apk
+          path: build/app/outputs/flutter-apk/*.apk
