@@ -1,19 +1,75 @@
 import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+
+// ==========================================
+// 1. DOMAIN MODELS & ENUMS
+// ==========================================
+
+enum PlaybackState {
+  idle,
+  connecting,
+  ready,
+  playing,
+  buffering,
+  stalled,
+  paused,
+  ended,
+  failed,
+}
+
+enum SourceHealth {
+  unknown,
+  working,
+  slow,
+  failed,
+}
+
+class StreamSource {
+  final int index;
+  final String title;
+  final String subtitle;
+  final String badge;
+  final String category;
+  final String url;
+  SourceHealth health;
+
+  StreamSource({
+    required this.index,
+    required this.title,
+    required this.subtitle,
+    required this.badge,
+    required this.category,
+    required this.url,
+    this.health = SourceHealth.unknown,
+  });
+}
+
+// ==========================================
+// 2. MAIN PLAYER SCREEN WIDGET
+// ==========================================
 
 class PlayerScreen extends StatefulWidget {
   final dynamic movie;
   final dynamic show;
   final dynamic episode;
   final dynamic mediaItem;
+  final dynamic media;
+  final dynamic item;
   final int? tmdbId;
+  final int? id;
   final String? title;
+  final String? name;
   final bool isTv;
+  final bool? isMovie;
   final int? seasonNumber;
   final int? episodeNumber;
+  final int? season;
+  final int? number;
 
   const PlayerScreen({
     super.key,
@@ -21,11 +77,18 @@ class PlayerScreen extends StatefulWidget {
     this.show,
     this.episode,
     this.mediaItem,
+    this.media,
+    this.item,
     this.tmdbId,
+    this.id,
     this.title,
+    this.name,
     this.isTv = false,
+    this.isMovie,
     this.seasonNumber,
     this.episodeNumber,
+    this.season,
+    this.number,
   });
 
   const PlayerScreen.forMovie(
@@ -34,11 +97,18 @@ class PlayerScreen extends StatefulWidget {
     this.show,
     this.episode,
     this.mediaItem,
+    this.media,
+    this.item,
     this.tmdbId,
+    this.id,
     this.title,
+    this.name,
     this.isTv = false,
+    this.isMovie = true,
     this.seasonNumber,
     this.episodeNumber,
+    this.season,
+    this.number,
   });
 
   const PlayerScreen.forEpisode({
@@ -47,37 +117,55 @@ class PlayerScreen extends StatefulWidget {
     this.episode,
     this.movie,
     this.mediaItem,
+    this.media,
+    this.item,
     this.tmdbId,
+    this.id,
     this.title,
+    this.name,
     this.isTv = true,
+    this.isMovie = false,
     this.seasonNumber,
     this.episodeNumber,
-    int? season,
-    int? number,
+    this.season,
+    this.number,
   });
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
-  late final WebViewController _controller;
+class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver {
+  WebViewController? _controller;
+  
+  // Playback & Session state
+  int _sessionId = 0;
   int _currentSourceIndex = 0;
+  PlaybackState _playbackState = PlaybackState.idle;
+  String _statusMessage = 'Initializing engine...';
   bool _showTopBar = true;
-  Timer? _hideTimer;
-  bool _isLoading = true;
-  bool _hasError = false;
-  String _errorMessage = '';
-  Timer? _autoFallbackTimer;
+  Timer? _hideControlsTimer;
+
+  // Watchdogs & Timers
+  Timer? _playbackTimeoutTimer;
+  Timer? _domWatcherTimer;
+  final Set<int> _exhaustedSources = {};
+
+  late List<StreamSource> _sources;
+
+  // ==========================================
+  // 3. PARAMETER RESOLUTION HELPERS
+  // ==========================================
 
   int get _resolvedId {
     if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
-    for (var obj in [widget.movie, widget.show, widget.mediaItem]) {
+    if (widget.id != null && widget.id! > 0) return widget.id!;
+    for (var obj in [widget.movie, widget.show, widget.mediaItem, widget.media, widget.item]) {
       if (obj != null) {
         try {
-          final id = obj.id;
-          if (id != null) {
-            final parsed = int.tryParse(id.toString());
+          final val = obj.id;
+          if (val != null) {
+            final parsed = int.tryParse(val.toString());
             if (parsed != null && parsed > 0) return parsed;
           }
         } catch (_) {}
@@ -87,12 +175,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   String get _resolvedTitle {
-    if (widget.title != null && widget.title!.isNotEmpty) return widget.title!;
-    for (var obj in [widget.movie, widget.show, widget.mediaItem]) {
+    if (widget.title != null && widget.title!.trim().isNotEmpty) return widget.title!.trim();
+    if (widget.name != null && widget.name!.trim().isNotEmpty) return widget.name!.trim();
+    for (var obj in [widget.movie, widget.show, widget.mediaItem, widget.media, widget.item]) {
       if (obj != null) {
         try {
           final t = obj.title ?? obj.name ?? obj.originalTitle ?? obj.originalName;
-          if (t != null && t.toString().isNotEmpty) return t.toString();
+          if (t != null && t.toString().trim().isNotEmpty) return t.toString().trim();
         } catch (_) {}
       }
     }
@@ -101,9 +190,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   bool get _resolvedIsTv {
     if (widget.isTv) return true;
+    if (widget.isMovie == false) return true;
     if (widget.show != null || widget.episode != null) return true;
-    if (widget.seasonNumber != null && widget.seasonNumber! > 0) return true;
-    for (var obj in [widget.mediaItem, widget.movie, widget.show]) {
+    if ((widget.seasonNumber != null && widget.seasonNumber! > 0) || (widget.season != null && widget.season! > 0)) return true;
+    for (var obj in [widget.mediaItem, widget.movie, widget.show, widget.media, widget.item]) {
       if (obj != null) {
         try {
           if (obj.mediaType == 'tv' || obj.isTv == true) return true;
@@ -115,6 +205,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   int get _resolvedSeason {
     if (widget.seasonNumber != null && widget.seasonNumber! > 0) return widget.seasonNumber!;
+    if (widget.season != null && widget.season! > 0) return widget.season!;
     if (widget.episode != null) {
       try {
         final s = widget.episode.seasonNumber ?? widget.episode.season;
@@ -126,6 +217,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   int get _resolvedEpisode {
     if (widget.episodeNumber != null && widget.episodeNumber! > 0) return widget.episodeNumber!;
+    if (widget.number != null && widget.number! > 0) return widget.number!;
     if (widget.episode != null) {
       try {
         final e = widget.episode.episodeNumber ?? widget.episode.episode ?? widget.episode.number;
@@ -135,108 +227,130 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return 1;
   }
 
-  List<Map<String, String>> get _sources {
+  // ==========================================
+  // 4. SOURCE MANAGER INITIALIZATION
+  // ==========================================
+
+  void _buildSourcesList() {
     final id = _resolvedId;
     final s = _resolvedSeason;
     final e = _resolvedEpisode;
     final query = Uri.encodeComponent('$_resolvedTitle full episode $e');
 
     if (_resolvedIsTv) {
-      return [
-        {
-          'title': 'Server 1: VidLink Original (1080p HD)',
-          'subtitle': 'Fastest buffer-free stream with multi subtitles',
-          'badge': 'English HD',
-          'group': 'Primary Streams',
-          'url': 'https://vidlink.pro/tv/$id/$s/$e?autoplay=true',
-        },
-        {
-          'title': 'Server 2: Hindi Dubbed & Multi-Audio',
-          'subtitle': 'Includes Hindi, Urdu, Tamil, and English tracks',
-          'badge': 'Hindi Dubbed',
-          'group': 'Dubbing & Regional',
-          'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e&autoplay=1',
-        },
-        {
-          'title': 'Server 3: Anime Special (EmbedSu)',
-          'subtitle': 'Japanese audio with English/Multi subs & fast CDN',
-          'badge': 'Anime JP/EN',
-          'group': 'Dubbing & Regional',
-          'url': 'https://embed.su/embed/tv/$id/$s/$e',
-        },
-        {
-          'title': 'Server 4: AutoEmbed Multi-Lang',
-          'subtitle': 'European, French, and Spanish dubbed streams',
-          'badge': 'Multi / French',
-          'group': 'Fast Mirrors',
-          'url': 'https://player.autoembed.cc/embed/tv/$id/$s/$e',
-        },
-        {
-          'title': 'Server 5: VidSrc Pro Mirror',
-          'subtitle': 'Ultra-fast fallback server for TV episodes',
-          'badge': 'Mirror 1',
-          'group': 'Fast Mirrors',
-          'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e',
-        },
-        {
-          'title': 'Server 6: Pakistani / Regional Direct Stream',
-          'subtitle': 'High quality official stream for Asian/Pakistani dramas',
-          'badge': 'Official HD',
-          'group': 'Dubbing & Regional',
-          'url': 'https://www.youtube.com/embed?listType=search&list=$query&autoplay=1',
-        },
+      _sources = [
+        StreamSource(
+          index: 0,
+          title: 'Server 1: VidLink Original (1080p HD)',
+          subtitle: 'High-speed clean stream with subtitles',
+          badge: 'English HD',
+          category: 'Primary',
+          url: 'https://vidlink.pro/tv/$id/$s/$e?autoplay=true',
+        ),
+        StreamSource(
+          index: 1,
+          title: 'Server 2: MultiEmbed (Hindi / Multi-Audio)',
+          subtitle: 'Includes Hindi, Urdu, Tamil & regional audio tracks',
+          badge: 'Hindi Dubbed',
+          category: 'Dubbed',
+          url: 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e&autoplay=1',
+        ),
+        StreamSource(
+          index: 2,
+          title: 'Server 3: Anime Special Master (EmbedSu)',
+          subtitle: 'Original Japanese audio with English & multi subs',
+          badge: 'Anime JP/EN',
+          category: 'Dubbed',
+          url: 'https://embed.su/embed/tv/$id/$s/$e',
+        ),
+        StreamSource(
+          index: 3,
+          title: 'Server 4: AutoEmbed Multi-Lang',
+          subtitle: 'French, Spanish, and European multi-language streams',
+          badge: 'French / Global',
+          category: 'Mirrors',
+          url: 'https://player.autoembed.cc/embed/tv/$id/$s/$e',
+        ),
+        StreamSource(
+          index: 4,
+          title: 'Server 5: VidSrc Pro CDN',
+          subtitle: 'Fast alternative 1080p fallback server',
+          badge: 'Mirror Pro',
+          category: 'Mirrors',
+          url: 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e',
+        ),
+        StreamSource(
+          index: 5,
+          title: 'Server 6: Regional Direct Official Stream',
+          subtitle: 'Official stream for Pakistani and Asian drama titles',
+          badge: 'Official HD',
+          category: 'Mirrors',
+          url: 'https://www.youtube.com/embed?listType=search&list=$query&autoplay=1',
+        ),
       ];
     } else {
-      return [
-        {
-          'title': 'Server 1: VidLink Original (1080p HD)',
-          'subtitle': 'Highest bitrate 1080p stream with multi subtitles',
-          'badge': 'English HD',
-          'group': 'Primary Streams',
-          'url': 'https://vidlink.pro/movie/$id?autoplay=true',
-        },
-        {
-          'title': 'Server 2: Hindi Dubbed & Multi-Audio',
-          'subtitle': 'Includes Hindi, Urdu & regional Indian dubs',
-          'badge': 'Hindi Dubbed',
-          'group': 'Dubbing & Regional',
-          'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&autoplay=1',
-        },
-        {
-          'title': 'Server 3: Anime Movie Master (EmbedSu)',
-          'subtitle': 'Original Japanese sound + English & Multi subtitles',
-          'badge': 'Anime JP/EN',
-          'group': 'Dubbing & Regional',
-          'url': 'https://embed.su/embed/movie/$id',
-        },
-        {
-          'title': 'Server 4: AutoEmbed Multi-Lang',
-          'subtitle': 'French, Spanish, and European audio options',
-          'badge': 'Multi / French',
-          'group': 'Fast Mirrors',
-          'url': 'https://player.autoembed.cc/embed/movie/$id',
-        },
-        {
-          'title': 'Server 5: VidSrc Pro Mirror',
-          'subtitle': 'Ultra-fast alternative 1080p/4K server',
-          'badge': 'Mirror 1',
-          'group': 'Fast Mirrors',
-          'url': 'https://vidsrc.cc/v2/embed/movie/$id',
-        },
-        {
-          'title': 'Server 6: SmashyStream Direct',
-          'subtitle': 'Multi-player fallback backup source',
-          'badge': 'Backup CDN',
-          'group': 'Fast Mirrors',
-          'url': 'https://player.smashy.stream/movie/$id',
-        },
+      _sources = [
+        StreamSource(
+          index: 0,
+          title: 'Server 1: VidLink Original (1080p HD)',
+          subtitle: 'High bitrate 1080p movie stream with subtitles',
+          badge: 'English HD',
+          category: 'Primary',
+          url: 'https://vidlink.pro/movie/$id?autoplay=true',
+        ),
+        StreamSource(
+          index: 1,
+          title: 'Server 2: MultiEmbed (Hindi / Multi-Audio)',
+          subtitle: 'Includes Hindi, Urdu & regional Indian dubbed audio',
+          badge: 'Hindi Dubbed',
+          category: 'Dubbed',
+          url: 'https://multiembed.mov/?video_id=$id&tmdb=1&autoplay=1',
+        ),
+        StreamSource(
+          index: 2,
+          title: 'Server 3: Anime Movie Master (EmbedSu)',
+          subtitle: 'Japanese original audio + English & multi subtitles',
+          badge: 'Anime JP/EN',
+          category: 'Dubbed',
+          url: 'https://embed.su/embed/movie/$id',
+        ),
+        StreamSource(
+          index: 3,
+          title: 'Server 4: AutoEmbed Multi-Lang',
+          subtitle: 'French, Spanish, and European audio options',
+          badge: 'French / Global',
+          category: 'Mirrors',
+          url: 'https://player.autoembed.cc/embed/movie/$id',
+        ),
+        StreamSource(
+          index: 4,
+          title: 'Server 5: VidSrc Pro CDN',
+          subtitle: 'Fast alternative 1080p/4K fallback server',
+          badge: 'Mirror Pro',
+          category: 'Mirrors',
+          url: 'https://vidsrc.cc/v2/embed/movie/$id',
+        ),
+        StreamSource(
+          index: 5,
+          title: 'Server 6: SmashyStream Direct',
+          subtitle: 'Multi-player backup fallback mirror',
+          badge: 'Backup CDN',
+          category: 'Mirrors',
+          url: 'https://player.smashy.stream/movie/$id',
+        ),
       ];
     }
   }
 
+  // ==========================================
+  // 5. LIFECYCLE & WEBVIEW CONTROLLER SETUP
+  // ==========================================
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
@@ -244,134 +358,343 @@ class _PlayerScreenState extends State<PlayerScreen> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     WakelockPlus.enable();
 
-    _initController();
-    _loadStream(_currentSourceIndex);
+    _buildSourcesList();
+    _initializeWebViewController();
     _startHideTimer();
   }
 
-  void _initController() {
-    _controller = WebViewController()
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _executeJavaScript("var v = document.querySelector('video'); if(v) v.pause();");
+    } else if (state == AppLifecycleState.resumed) {
+      if (_playbackState == PlaybackState.playing) {
+        _executeJavaScript("var v = document.querySelector('video'); if(v && v.paused) v.play();");
+      }
+    }
+  }
+
+  void _initializeWebViewController() {
+    final controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent('Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36')
+      ..setUserAgent(
+        'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+      )
       ..setBackgroundColor(Colors.black)
+      ..addJavaScriptChannel(
+        'FlutterPlayerBridge',
+        onMessageReceived: _handleJavaScriptMessage,
+      )
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (url) {
-            if (mounted) {
-              setState(() {
-                _isLoading = true;
-                _hasError = false;
-              });
-            }
+            if (kDebugMode) debugPrint('[PlayerEngine] Page started: $url');
           },
           onPageFinished: (url) {
-            if (mounted) setState(() => _isLoading = false);
-            _injectAdShieldAndAutoPlay();
+            if (kDebugMode) debugPrint('[PlayerEngine] Page loaded: $url');
+            _injectMonitorAndAutoPlay();
           },
           onWebResourceError: (error) {
-            // Check if main stream page failed to load
+            // Strict check: only handle real connection breakdown on the primary HTML document
             if (error.isForMainFrame == true) {
-              _handleStreamFailure('Network error: ${error.description}');
+              final desc = error.description.toLowerCase();
+              if (desc.contains('net::err_name_not_resolved') ||
+                  desc.contains('net::err_connection_refused') ||
+                  desc.contains('net::err_connection_timed_out') ||
+                  desc.contains('net::err_timed_out') ||
+                  desc.contains('net::err_cert') ||
+                  desc.contains('net::err_ssl')) {
+                _onSourceFailed(_sessionId, 'DNS or Network unreachable (${error.description})');
+              }
             }
           },
-          onNavigationRequest: (req) {
-            final u = req.url.toLowerCase();
-            // Whitelist safe streaming hosts and media formats
-            if (u.startsWith('blob:') ||
-                u.startsWith('about:') ||
-                u.contains('vidlink') ||
-                u.contains('multiembed') ||
-                u.contains('embed.su') ||
-                u.contains('autoembed') ||
-                u.contains('vidsrc') ||
-                u.contains('smashy') ||
-                u.contains('youtube') ||
-                u.contains('googlevideo') ||
-                u.contains('m3u8') ||
-                u.contains('mp4')) {
-              return NavigationDecision.navigate;
-            }
-            // Block all external redirects & betting popups
-            return NavigationDecision.prevent;
-          },
+          onNavigationRequest: _validateNavigationRequest,
         ),
       );
+
+    _controller = controller;
+    _loadStreamWithSession(_currentSourceIndex);
   }
 
-  void _loadStream(int index) {
-    _autoFallbackTimer?.cancel();
+  NavigationDecision _validateNavigationRequest(NavigationRequest request) {
+    final uri = Uri.tryParse(request.url);
+    if (uri == null) return NavigationDecision.prevent;
+
+    final scheme = uri.scheme.toLowerCase();
+    if (scheme == 'about' || scheme == 'blob' || scheme == 'data') {
+      return NavigationDecision.navigate;
+    }
+    if (scheme != 'http' && scheme != 'https') {
+      return NavigationDecision.prevent;
+    }
+
+    final host = uri.host.toLowerCase();
+    final allowedDomains = [
+      'vidlink.pro',
+      'multiembed.mov',
+      'embed.su',
+      'autoembed.cc',
+      'vidsrc.cc',
+      'vidsrc.me',
+      'vidsrc.to',
+      'smashy.stream',
+      'smashystream.xyz',
+      'youtube.com',
+      'googlevideo.com',
+      'cloudflare.com',
+      'gstatic.com',
+      'googleapis.com',
+    ];
+
+    for (final domain in allowedDomains) {
+      if (host == domain || host.endsWith('.$domain')) {
+        return NavigationDecision.navigate;
+      }
+    }
+
+    final path = uri.path.toLowerCase();
+    if (path.contains('.m3u8') || path.contains('.mp4') || path.contains('.ts')) {
+      return NavigationDecision.navigate;
+    }
+
+    if (kDebugMode) {
+      debugPrint('[PlayerSecurity] Blocked unwanted redirect: ${request.url}');
+    }
+    return NavigationDecision.prevent;
+  }
+
+  // ==========================================
+  // 6. SESSION-TOKEN LOAD & SMART FALLBACK
+  // ==========================================
+
+  void _loadStreamWithSession(int index) {
+    if (!mounted) return;
+
+    _sessionId++;
+    final currentSession = _sessionId;
+
+    _playbackTimeoutTimer?.cancel();
+    _domWatcherTimer?.cancel();
+
     setState(() {
       _currentSourceIndex = index;
-      _isLoading = true;
-      _hasError = false;
-      _errorMessage = '';
+      _playbackState = PlaybackState.connecting;
+      _statusMessage = 'Connecting to ${_sources[index]['badge']}...';
     });
 
-    final targetUrl = _sources[index]['url']!;
-    _controller.loadRequest(Uri.parse(targetUrl));
+    final targetUrl = _sources[index]['url'];
+    if (kDebugMode) {
+      debugPrint('[PlayerSession: $currentSession] Loading source $index: $targetUrl');
+    }
 
-    // 14-second safety guard: If video doesn't play or server stalls, give user an instant option
-    _autoFallbackTimer = Timer(const Duration(seconds: 14), () {
-      if (_isLoading && mounted) {
-        _handleStreamFailure('Stream response took too long');
+    _controller?.loadRequest(Uri.parse(targetUrl));
+
+    // Health Watchdog: 12 seconds to confirm real playback or trigger fallback
+    _playbackTimeoutTimer = Timer(const Duration(seconds: 12), () {
+      if (currentSession != _sessionId || !mounted) return;
+      if (_playbackState != PlaybackState.playing) {
+        _onSourceFailed(currentSession, 'Stream playback initiation timed out (12s)');
       }
     });
   }
 
-  void _handleStreamFailure(String reason) {
-    _autoFallbackTimer?.cancel();
-    if (!mounted) return;
+  void _onSourceFailed(int sessionToken, String reason) {
+    if (sessionToken != _sessionId || !mounted) return;
 
-    setState(() {
-      _isLoading = false;
-      _hasError = true;
-      _errorMessage = reason;
+    if (kDebugMode) {
+      debugPrint('[PlayerSession: $sessionToken] FAILED: $reason');
+    }
+
+    _sources[_currentSourceIndex].health = SourceHealth.failed;
+    _exhaustedSources.add(_currentSourceIndex);
+
+    // Look for next unexhausted server
+    int nextIndex = -1;
+    for (int i = 0; i < _sources.length; i++) {
+      if (!_exhaustedSources.contains(i)) {
+        nextIndex = i;
+        break;
+      }
+    }
+
+    if (nextIndex != -1) {
+      // Smooth non-disruptive floating indicator
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFF1E1E1E),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 3),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          content: Row(
+            children: [
+              const Icon(Icons.sync_problem_rounded, color: Colors.amber, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '${_sources[_currentSourceIndex]['badge']} is unresponsive. Auto-switching to ${_sources[nextIndex]['badge']}...',
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      _loadStreamWithSession(nextIndex);
+    } else {
+      // All servers exhausted in this cycle
+      _playbackTimeoutTimer?.cancel();
+      _domWatcherTimer?.cancel();
+      setState(() {
+        _playbackState = PlaybackState.failed;
+        _statusMessage = 'All stream mirrors failed to respond.';
+      });
+    }
+  }
+
+  // ==========================================
+  // 7. JS HEALTH MONITOR & DOM INJECTION
+  // ==========================================
+
+  void _handleJavaScriptMessage(JavaScriptMessage message) {
+    try {
+      final data = json.decode(message.message) as Map<String, dynamic>;
+      final event = data['event'] as String? ?? '';
+
+      if (kDebugMode) {
+        debugPrint('[JSBridge -> Flutter] Event: $event');
+      }
+
+      switch (event) {
+        case 'PLAYING':
+          if (mounted && _playbackState != PlaybackState.playing) {
+            setState(() {
+              _playbackState = PlaybackState.playing;
+              _sources[_currentSourceIndex].health = SourceHealth.working;
+            });
+            _playbackTimeoutTimer?.cancel();
+            _startHideTimer();
+          }
+          break;
+
+        case 'BUFFERING':
+        case 'WAITING':
+          if (mounted && _playbackState == PlaybackState.playing) {
+            setState(() => _playbackState = PlaybackState.buffering);
+          }
+          break;
+
+        case 'STALLED':
+          if (mounted && _playbackState == PlaybackState.playing) {
+            setState(() {
+              _playbackState = PlaybackState.stalled;
+              _sources[_currentSourceIndex].health = SourceHealth.slow;
+            });
+          }
+          break;
+
+        case 'PAUSED':
+          if (mounted && _playbackState == PlaybackState.playing) {
+            setState(() => _playbackState = PlaybackState.paused);
+          }
+          break;
+
+        case 'ERROR':
+          final detail = data['detail'] as String? ?? '';
+          _onSourceFailed(_sessionId, 'HTML5 Video Error: $detail');
+          break;
+      }
+    } catch (_) {}
+  }
+
+  void _injectMonitorAndAutoPlay() {
+    _domWatcherTimer?.cancel();
+    final currentSession = _sessionId;
+    int attempts = 0;
+
+    _domWatcherTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      attempts++;
+      if (!mounted || currentSession != _sessionId || _playbackState == PlaybackState.playing || attempts > 16) {
+        timer.cancel();
+        return;
+      }
+
+      const script = '''
+        (function() {
+          try {
+            window.open = function() { return null; };
+            window.alert = function() {};
+            window.confirm = function() { return true; };
+
+            function post(evt, d) {
+              if (window.FlutterPlayerBridge) {
+                window.FlutterPlayerBridge.postMessage(JSON.stringify({ event: evt, detail: d || '' }));
+              }
+            }
+
+            var v = document.querySelector('video');
+            if (v) {
+              if (!v.__monitored) {
+                v.__monitored = true;
+                v.addEventListener('playing', function() { post('PLAYING'); });
+                v.addEventListener('waiting', function() { post('BUFFERING'); });
+                v.addEventListener('stalled', function() { post('STALLED'); });
+                v.addEventListener('pause', function() { post('PAUSED'); });
+                v.addEventListener('error', function() { post('ERROR', v.error ? v.error.message : ''); });
+              }
+
+              v.muted = false;
+              v.volume = 1.0;
+              if (v.paused) {
+                var p = v.play();
+                if (p !== undefined) {
+                  p.catch(function() {
+                    v.muted = true;
+                    v.play().catch(function(){});
+                  });
+                }
+              }
+
+              if (!v.paused && v.currentTime > 0) {
+                post('PLAYING');
+              }
+            } else {
+              var btn = document.querySelector('.play-btn, .vjs-big-play-button, button[aria-label="Play"], #play, .jw-display-icon-display, svg[data-icon="play"]');
+              if (btn) btn.click();
+            }
+          } catch(e) {}
+        })();
+      ''';
+
+      _executeJavaScript(script);
     });
   }
 
-  void _switchToNextServer() {
-    final nextIndex = (_currentSourceIndex + 1) % _sources.length;
-    _loadStream(nextIndex);
+  void _executeJavaScript(String code) {
+    try {
+      _controller?.runJavaScript(code).catchError((_) {});
+    } catch (_) {}
   }
 
-  void _injectAdShieldAndAutoPlay() {
-    const shieldJs = '''
-      (function() {
-        // Block popups and redirects
-        window.open = function() { return null; };
-        window.alert = function() {};
-        window.confirm = function() { return true; };
-
-        // Clean, non-blocking auto-play trigger
-        var attempts = 0;
-        var interval = setInterval(function() {
-          attempts++;
-          var playBtn = document.querySelector('.play-btn, .vjs-big-play-button, button[aria-label="Play"], #play, .jw-display-icon-display, svg[data-icon="play"]');
-          if (playBtn) playBtn.click();
-
-          var v = document.querySelector('video');
-          if (v) {
-            v.muted = false;
-            v.volume = 1.0;
-            if (v.paused) v.play().catch(function(){});
-          }
-
-          if (attempts > 8) clearInterval(interval);
-        }, 650);
-      })();
-    ''';
-    _controller.runJavaScript(shieldJs).catchError((_) {});
-  }
+  // ==========================================
+  // 8. USER CONTROLS & TIMERS
+  // ==========================================
 
   void _startHideTimer() {
-    _hideTimer?.cancel();
-    _hideTimer = Timer(const Duration(seconds: 4), () {
+    _hideControlsTimer?.cancel();
+    _hideControlsTimer = Timer(const Duration(seconds: 4), () {
       if (mounted) setState(() => _showTopBar = false);
     });
   }
 
-  void _showServerSheet() {
-    _hideTimer?.cancel();
+  void _toggleControlsVisibility() {
+    setState(() => _showTopBar = !_showTopBar);
+    if (_showTopBar) _startHideTimer();
+  }
+
+  void _showServerPickerSheet() {
+    _hideControlsTimer?.cancel();
     final sources = _sources;
 
     showModalBottomSheet(
@@ -387,7 +710,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             constraints: BoxConstraints(
               maxHeight: MediaQuery.of(context).size.height * 0.85,
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -400,7 +723,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         Icon(Icons.tune_rounded, color: Colors.redAccent, size: 22),
                         SizedBox(width: 8),
                         Text(
-                          'Audio Dubbing & Servers',
+                          'Audio Dubbing & Streams',
                           style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
                         ),
                       ],
@@ -418,14 +741,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     itemBuilder: (ctx, idx) {
                       final item = sources[idx];
                       final isSelected = idx == _currentSourceIndex;
+                      final isFailed = item.health == SourceHealth.failed;
+                      final isWorking = item.health == SourceHealth.working;
+
+                      Color statusColor = Colors.white70;
+                      String statusText = item.subtitle;
+
+                      if (isWorking) {
+                        statusColor = Colors.greenAccent;
+                        statusText = '● Verified Playback Active';
+                      } else if (isFailed) {
+                        statusColor = Colors.redAccent;
+                        statusText = '⚠ Unresponsive in this session (tap to retry)';
+                      }
 
                       return Container(
                         margin: const EdgeInsets.symmetric(vertical: 4),
                         decoration: BoxDecoration(
-                          color: isSelected ? Colors.redAccent.withOpacity(0.18) : Colors.white.withOpacity(0.04),
+                          color: isSelected
+                              ? Colors.redAccent.withOpacity(0.18)
+                              : Colors.white.withOpacity(0.04),
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
-                            color: isSelected ? Colors.redAccent : Colors.white10,
+                            color: isSelected
+                                ? Colors.redAccent
+                                : (isFailed ? Colors.red.withOpacity(0.3) : Colors.white10),
                             width: 1.0,
                           ),
                         ),
@@ -437,11 +777,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                 : (idx == 2
                                     ? Icons.animation_rounded
                                     : (idx == 0 ? Icons.hd_rounded : Icons.dns_rounded)),
-                            color: isSelected ? Colors.redAccent : Colors.white70,
+                            color: isSelected ? Colors.redAccent : statusColor,
                             size: 22,
                           ),
                           title: Text(
-                            item['title']!,
+                            item.title,
                             style: TextStyle(
                               color: isSelected ? Colors.redAccent : Colors.white,
                               fontSize: 13.5,
@@ -449,9 +789,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             ),
                           ),
                           subtitle: Text(
-                            item['subtitle']!,
+                            statusText,
                             style: TextStyle(
-                              color: isSelected ? Colors.redAccent.withOpacity(0.8) : Colors.white38,
+                              color: statusColor.withOpacity(0.8),
                               fontSize: 11,
                             ),
                           ),
@@ -462,7 +802,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: Text(
-                              item['badge']!,
+                              item.badge,
                               style: TextStyle(
                                 color: isSelected ? Colors.white : Colors.white70,
                                 fontSize: 10.5,
@@ -472,7 +812,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           ),
                           onTap: () {
                             Navigator.pop(ctx);
-                            _loadStream(idx);
+                            _exhaustedSources.remove(idx);
+                            item.health = SourceHealth.unknown;
+                            _loadStreamWithSession(idx);
                             _startHideTimer();
                           },
                         ),
@@ -490,13 +832,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   void dispose() {
-    _hideTimer?.cancel();
-    _autoFallbackTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _hideControlsTimer?.cancel();
+    _playbackTimeoutTimer?.cancel();
+    _domWatcherTimer?.cancel();
+
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     WakelockPlus.disable();
     super.dispose();
   }
+
+  // ==========================================
+  // 9. BUILD METHOD
+  // ==========================================
 
   @override
   Widget build(BuildContext context) {
@@ -510,52 +859,53 @@ class _PlayerScreenState extends State<PlayerScreen> {
       body: SafeArea(
         child: Stack(
           children: [
-            // Full Video Canvas - Clean & smooth native HTML5 player
-            WebViewWidget(controller: _controller),
+            // 1. Primary Fullscreen Web Canvas
+            if (_controller != null) WebViewWidget(controller: _controller!),
 
-            // Top screen touch detection to toggle UI bar
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              height: 80,
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: () {
-                  setState(() => _showTopBar = !_showTopBar);
-                  if (_showTopBar) _startHideTimer();
-                },
+            // 2. Full-Screen Gestures (Only active when controls are hidden to reveal top bar)
+            if (!_showTopBar)
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: _toggleControlsVisibility,
+                ),
               ),
-            ),
 
-            // Modern Loading Screen
-            if (_isLoading)
+            // 3. Smooth Connecting / Buffering Spinner
+            if (_playbackState == PlaybackState.connecting || _playbackState == PlaybackState.buffering)
               Container(
-                color: Colors.black,
+                color: _playbackState == PlaybackState.connecting ? Colors.black : Colors.transparent,
                 child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const CircularProgressIndicator(color: Colors.redAccent, strokeWidth: 2.8),
-                      const SizedBox(height: 16),
-                      Text(
-                        'Connecting to ${activeSource['badge']} Stream...',
-                        style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        activeSource['title']!,
-                        style: const TextStyle(color: Colors.white54, fontSize: 12),
-                      ),
-                    ],
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                    decoration: BoxDecoration(
+                      color: Colors.black87,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 28,
+                          height: 28,
+                          child: CircularProgressIndicator(color: Colors.redAccent, strokeWidth: 2.8),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          _statusMessage,
+                          style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
 
-            // Auto-Fallback / Server Error Card
-            if (_hasError)
+            // 4. Exhausted Mirrors Recovery Card
+            if (_playbackState == PlaybackState.failed)
               Container(
-                color: Colors.black.withOpacity(0.92),
+                color: Colors.black.withOpacity(0.94),
                 child: Center(
                   child: Container(
                     margin: const EdgeInsets.symmetric(horizontal: 28),
@@ -568,26 +918,32 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.cloud_off_rounded, color: Colors.redAccent, size: 48),
+                        const Icon(Icons.wifi_off_rounded, color: Colors.redAccent, size: 48),
                         const SizedBox(height: 12),
                         const Text(
-                          'Server Unreachable',
+                          'Playback Interrupted',
                           style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 6),
-                        Text(
-                          '${activeSource['title']} is currently not responding in your region.',
+                        const Text(
+                          'All stream providers are currently unreachable in your region. Check internet connection or choose another source.',
                           textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.white70, fontSize: 13),
+                          style: TextStyle(color: Colors.white70, fontSize: 13),
                         ),
                         const SizedBox(height: 18),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             OutlinedButton.icon(
-                              onPressed: () => _loadStream(_currentSourceIndex),
-                              icon: const Icon(Icons.refresh_rounded, color: Colors.white70, size: 18),
-                              label: const Text('Retry Server', style: TextStyle(color: Colors.white)),
+                              onPressed: () {
+                                _exhaustedSources.clear();
+                                for (var s in _sources) {
+                                  s.health = SourceHealth.unknown;
+                                }
+                                _loadStreamWithSession(0);
+                              },
+                              icon: const Icon(Icons.replay_rounded, color: Colors.white70, size: 18),
+                              label: const Text('Retry All', style: TextStyle(color: Colors.white)),
                               style: OutlinedButton.styleFrom(
                                 side: const BorderSide(color: Colors.white24),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -595,9 +951,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             ),
                             const SizedBox(width: 12),
                             ElevatedButton.icon(
-                              onPressed: _switchToNextServer,
-                              icon: const Icon(Icons.skip_next_rounded, color: Colors.white, size: 18),
-                              label: const Text('Try Next Mirror', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                              onPressed: _showServerPickerSheet,
+                              icon: const Icon(Icons.tune_rounded, color: Colors.white, size: 18),
+                              label: const Text('Select Source', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.redAccent,
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -611,7 +967,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
               ),
 
-            // Sleek Netflix-Style Top Header Bar
+            // 5. Sleek Floating Header Bar
             AnimatedOpacity(
               duration: const Duration(milliseconds: 250),
               opacity: _showTopBar ? 1.0 : 0.0,
@@ -653,17 +1009,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           ),
                         ),
                       ),
-                      // Refresh button
                       IconButton(
                         icon: const Icon(Icons.refresh_rounded, color: Colors.white70, size: 20),
                         tooltip: 'Reload Stream',
-                        onPressed: () => _loadStream(_currentSourceIndex),
+                        onPressed: () => _loadStreamWithSession(_currentSourceIndex),
                       ),
                       const SizedBox(width: 4),
-                      // Audio Dubbing & Server Switcher Pill
                       InkWell(
                         borderRadius: BorderRadius.circular(20),
-                        onTap: _showServerSheet,
+                        onTap: _showServerPickerSheet,
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                           decoration: BoxDecoration(
@@ -677,7 +1031,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               const Icon(Icons.tune_rounded, color: Colors.redAccent, size: 14),
                               const SizedBox(width: 6),
                               Text(
-                                activeSource['badge']!,
+                                activeSource.badge,
                                 style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
                               ),
                               const SizedBox(width: 4),
