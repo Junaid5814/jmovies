@@ -50,11 +50,15 @@ jobs:
           EOF
           cp .env assets/.env 2>/dev/null || true
 
-      - name: Install Dependencies & Patch SDK
+      - name: Install Dependencies & Patch Gradle / Proguard
         run: |
           flutter pub get
+          # 1. Fix CompileSDK 34 across plugins
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
+          
+          # 2. Fix AGP 8 Proguard error in flutter_inappwebview
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
 
       - name: Build APK
         run: flutter build apk --release
