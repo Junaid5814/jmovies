@@ -1,0 +1,43 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="crimsonGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF1E2D"/>
+      <stop offset="100%" stop-color="#9B0710"/>
+    </linearGradient>
+    <radialGradient id="bgGlow" cx="50%" cy="35%" r="75%">
+      <stop offset="0%" stop-color="#1C1C1E"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background: pure black / deep charcoal, rounded square (adaptive-icon safe area) -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGlow)"/>
+
+  <!-- Outer film reel ring -->
+  <circle cx="256" cy="256" r="176" fill="none" stroke="url(#crimsonGrad)" stroke-width="18"/>
+
+  <!-- Film reel sprocket holes -->
+  <circle cx="256" cy="112" r="22" fill="url(#crimsonGrad)"/>
+  <circle cx="378" cy="184" r="22" fill="url(#crimsonGrad)"/>
+  <circle cx="378" cy="328" r="22" fill="url(#crimsonGrad)"/>
+  <circle cx="256" cy="400" r="22" fill="url(#crimsonGrad)"/>
+  <circle cx="134" cy="328" r="22" fill="url(#crimsonGrad)"/>
+  <circle cx="134" cy="184" r="22" fill="url(#crimsonGrad)"/>
+
+  <!-- Center hub -->
+  <circle cx="256" cy="256" r="46" fill="#0A0A0A" stroke="url(#crimsonGrad)" stroke-width="10"/>
+
+  <!-- "J" monogram cut through the hub -->
+  <path
+    d="M270 226
+       v78
+       a26 26 0 0 1 -26 26
+       h-6
+       a26 26 0 0 1 -26 -26
+       v-8"
+    fill="none"
+    stroke="#F5F5F7"
+    stroke-width="14"
+    stroke-linecap="round"
+  />
+</svg>

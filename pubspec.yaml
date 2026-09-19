@@ -1,0 +1,67 @@
+name: jmovies
+description: A premium dark-themed movie discovery & streaming app.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+
+  # State management
+  flutter_riverpod: ^2.5.1
+
+  # Networking (TMDB API)
+  dio: ^5.7.0
+
+  # Images
+  cached_network_image: ^3.4.1
+  flutter_svg: ^2.0.10+1
+  shimmer: ^3.0.0
+  # Pinned explicitly: cached_network_image pulls flutter_cache_manager,
+  # which pulls sqflite for its cache index. Older transitive sqflite
+  # versions are missing the Android namespace declaration AGP 8+/recent
+  # (compileSdk 34+, "Baklava" preview SDK) builds require, which is the
+  # most common source of "sqflite_android" Gradle compile failures in
+  # this dependency graph. Pinning a modern version here avoids that.
+  sqflite: ^2.3.3+1
+
+  # UI / Carousels
+  carousel_slider: ^5.0.0
+  smooth_page_indicator: ^1.1.0
+  google_fonts: ^6.2.1
+
+  # Video playback (HLS / DASH / MP4) — native player
+  video_player: ^2.9.2
+  wakelock_plus: ^1.2.8   # keep screen on during playback
+  screen_brightness: ^1.0.1
+
+  # In-app WebView player (for backends that serve a hosted player page)
+  flutter_inappwebview: ^6.1.5
+
+  # Utilities
+  equatable: ^2.0.5
+  intl: ^0.19.0
+  flutter_dotenv: ^5.1.0  # store TMDB API key outside source control
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter:
+  uses-material-design: true
+  assets:
+    - .env
+    - assets/icons/
+    - assets/images/
+
+flutter_launcher_icons:
+  android: true
+  image_path: "assets/icons/app_icon.png"
+  adaptive_icon_background: "#0A0A0A"
+  adaptive_icon_foreground: "assets/icons/app_icon_fg.png"
