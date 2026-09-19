@@ -88,12 +88,12 @@ jobs:
                       with open(p, 'w', encoding='utf-8') as fl: fl.write(t)
           EOF
 
-      - name: Hunt and Replace Broken Player Across Entire Project
+      - name: Inject Upgraded Gesture & Multi-Language Player
         run: |
           python3 - << 'EOF'
           import os, re
 
-          player_template = """import 'dart:async';
+          master_player = """import 'dart:async';
           import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
           import 'package:webview_flutter/webview_flutter.dart';
@@ -148,10 +148,13 @@ jobs:
 
           class ___CLASS_NAME__State extends State<__CLASS_NAME__> {
             late final WebViewController _controller;
-            int _currentServer = 0;
-            bool _showControls = true;
-            Timer? _hideTimer;
+            int _selectedSourceIndex = 0;
+            bool _showHud = true;
+            Timer? _hudTimer;
             bool _isLoading = true;
+            String? _feedbackText;
+            Timer? _feedbackTimer;
+            bool _autoSwitched = false;
 
             int get _resolvedId {
               if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
@@ -195,22 +198,81 @@ jobs:
               return false;
             }
 
-            List<Map<String, String>> get _servers {
+            bool get _isPakistaniDrama {
+              final t = _resolvedTitle.toLowerCase();
+              final pkKeywords = ['noor jahan', 'fraud', 'ertugrul', 'parizaad', 'tere bin', 'ishq murshid', 'fairy tale', 'khuda aur mohabbat'];
+              for (var k in pkKeywords) {
+                if (t.contains(k)) return true;
+              }
+              return false;
+            }
+
+            List<Map<String, String>> get _audioOptions {
               final id = _resolvedId;
               final s = widget.seasonNumber ?? widget.season ?? 1;
               final e = widget.episodeNumber ?? widget.episode ?? 1;
+              final qTitle = Uri.encodeComponent('$_resolvedTitle ep $e full episode HD');
 
               if (_resolvedIsTv) {
-                return [
-                  {'name': 'Server 1 (VidLink AutoPlay)', 'url': 'https://vidlink.pro/tv/$id/$s/$e?autoplay=true'},
-                  {'name': 'Server 2 (MultiEmbed Hindi/Dub)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e&autoplay=1'},
-                  {'name': 'Server 3 (VidSrc Backup)', 'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e'},
-                ];
+                if (_isPakistaniDrama) {
+                  return [
+                    {
+                      'label': 'Urdu Official HD (Direct)',
+                      'badge': 'PAKISTANI DRAMA',
+                      'url': 'https://www.youtube.com/embed?listType=search&list=$qTitle&autoplay=1',
+                    },
+                    {
+                      'label': 'Hindi / Urdu Multi-Audio',
+                      'badge': 'DUBBED',
+                      'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e&autoplay=1',
+                    },
+                    {
+                      'label': 'English / Original HD',
+                      'badge': 'ULTRA HD',
+                      'url': 'https://vidlink.pro/tv/$id/$s/$e?autoplay=true',
+                    },
+                  ];
+                } else {
+                  return [
+                    {
+                      'label': 'English (Original Audio)',
+                      'badge': 'FAST HD',
+                      'url': 'https://vidlink.pro/tv/$id/$s/$e?autoplay=true',
+                    },
+                    {
+                      'label': 'Hindi Dubbed / Dual Audio',
+                      'badge': 'MULTI-AUDIO',
+                      'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e&autoplay=1',
+                    },
+                    {
+                      'label': 'Anime & Global Stream',
+                      'badge': 'SUB/DUB',
+                      'url': 'https://player.autoembed.cc/embed/tv/$id/$s/$e',
+                    },
+                    {
+                      'label': 'Alternative Official Stream',
+                      'badge': 'BACKUP',
+                      'url': 'https://www.youtube.com/embed?listType=search&list=$qTitle&autoplay=1',
+                    },
+                  ];
+                }
               } else {
                 return [
-                  {'name': 'Server 1 (VidLink AutoPlay)', 'url': 'https://vidlink.pro/movie/$id?autoplay=true'},
-                  {'name': 'Server 2 (MultiEmbed Hindi/Dub)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&autoplay=1'},
-                  {'name': 'Server 3 (VidSrc Backup)', 'url': 'https://vidsrc.cc/v2/embed/movie/$id'},
+                  {
+                    'label': 'English (Original Audio)',
+                    'badge': 'FAST HD',
+                    'url': 'https://vidlink.pro/movie/$id?autoplay=true',
+                  },
+                  {
+                    'label': 'Hindi Dubbed / Multi-Audio',
+                    'badge': 'MULTI-AUDIO',
+                    'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&autoplay=1',
+                  },
+                  {
+                    'label': 'Ultra Stream (Backup)',
+                    'badge': '1080P',
+                    'url': 'https://vidsrc.cc/v2/embed/movie/$id',
+                  },
                 ];
               }
             }
@@ -229,6 +291,14 @@ jobs:
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
                 ..setUserAgent('Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36')
                 ..setBackgroundColor(Colors.black)
+                ..addJavaScriptChannel(
+                  'StreamWatcher',
+                  onMessageReceived: (JavaScriptMessage msg) {
+                    if (msg.message == 'NOT_AVAILABLE') {
+                      _handleStreamFailure();
+                    }
+                  },
+                )
                 ..setNavigationDelegate(
                   NavigationDelegate(
                     onPageStarted: (_) {
@@ -236,57 +306,116 @@ jobs:
                     },
                     onPageFinished: (_) {
                       if (mounted) setState(() => _isLoading = false);
-                      _injectAutoTrigger();
+                      _injectAutoTriggerAndObserver();
                     },
                     onNavigationRequest: (req) {
-                      final url = req.url.toLowerCase();
-                      if (url.startsWith('blob:') ||
-                          url.startsWith('about:') ||
-                          url.contains('vidlink') ||
-                          url.contains('multiembed') ||
-                          url.contains('vidsrc') ||
-                          url.contains('m3u8') ||
-                          url.contains('mp4')) {
+                      final u = req.url.toLowerCase();
+                      if (u.startsWith('blob:') ||
+                          u.startsWith('about:') ||
+                          u.contains('vidlink') ||
+                          u.contains('multiembed') ||
+                          u.contains('autoembed') ||
+                          u.contains('youtube') ||
+                          u.contains('vidsrc') ||
+                          u.contains('m3u8') ||
+                          u.contains('mp4')) {
                         return NavigationDecision.navigate;
                       }
                       return NavigationDecision.prevent;
                     },
                   ),
                 )
-                ..loadRequest(Uri.parse(_servers[_currentServer]['url']!));
+                ..loadRequest(Uri.parse(_audioOptions[_selectedSourceIndex]['url']!));
 
-              _startHideTimer();
+              _startHudTimer();
             }
 
-            void _injectAutoTrigger() {
+            void _handleStreamFailure() {
+              if (_autoSwitched) return;
+              _autoSwitched = true;
+              if (mounted) {
+                _triggerFeedback('Switching to alternate stream... 🔄');
+                Timer(const Duration(seconds: 1), () {
+                  if (mounted && _selectedSourceIndex + 1 < _audioOptions.length) {
+                    setState(() {
+                      _selectedSourceIndex++;
+                      _isLoading = true;
+                    });
+                    _controller.loadRequest(Uri.parse(_audioOptions[_selectedSourceIndex]['url']!));
+                  }
+                });
+              }
+            }
+
+            void _injectAutoTriggerAndObserver() {
               const js = '''
                 (function() {
                   window.open = function() { return null; };
+
+                  function checkNotAvailable() {
+                    var bodyText = document.body ? document.body.innerText : '';
+                    if (bodyText.includes("Couldn't Find This Content") || 
+                        bodyText.includes("Not Available") || 
+                        bodyText.includes("404 Not Found") || 
+                        bodyText.includes("Video not found")) {
+                      StreamWatcher.postMessage('NOT_AVAILABLE');
+                    }
+                  }
+
                   setInterval(function() {
-                    const btn = document.querySelector('.play-btn, .vjs-big-play-button, button[aria-label="Play"], #play, .jw-display-icon-display, svg[data-icon="play"]');
+                    checkNotAvailable();
+                    var btn = document.querySelector('.play-btn, .vjs-big-play-button, button[aria-label="Play"], #play, .jw-display-icon-display, svg[data-icon="play"]');
                     if (btn) btn.click();
-                    const v = document.querySelector('video');
-                    if (v && v.paused) v.play().catch(function(){});
-                  }, 350);
+                    var v = document.querySelector('video');
+                    if (v && v.paused) {
+                      v.play().catch(function(){});
+                    }
+                  }, 500);
                 })();
               ''';
               _controller.runJavaScript(js).catchError((_) {});
             }
 
-            void _startHideTimer() {
-              _hideTimer?.cancel();
-              _hideTimer = Timer(const Duration(seconds: 4), () {
-                if (mounted) setState(() => _showControls = false);
+            void _seekBy(int seconds) {
+              final js = "var v = document.querySelector('video'); if(v) { v.currentTime += $seconds; }";
+              _controller.runJavaScript(js).catchError((_) {});
+              _triggerFeedback(seconds > 0 ? '+$seconds Sec ⏩' : '$seconds Sec ⏪');
+            }
+
+            void _togglePlayPause() {
+              const js = "var v = document.querySelector('video'); if(v) { if(v.paused) { v.play(); } else { v.pause(); } }";
+              _controller.runJavaScript(js).catchError((_) {});
+              _triggerFeedback('Play / Pause ⏯️');
+            }
+
+            void _unmuteAudio() {
+              const js = "var v = document.querySelector('video'); if(v) { v.muted = false; v.volume = 1.0; }";
+              _controller.runJavaScript(js).catchError((_) {});
+              _triggerFeedback('Audio Unmuted 🔊');
+            }
+
+            void _triggerFeedback(String text) {
+              setState(() => _feedbackText = text);
+              _feedbackTimer?.cancel();
+              _feedbackTimer = Timer(const Duration(milliseconds: 1400), () {
+                if (mounted) setState(() => _feedbackText = null);
               });
             }
 
-            void _toggleControls() {
-              setState(() => _showControls = !_showControls);
-              if (_showControls) _startHideTimer();
+            void _startHudTimer() {
+              _hudTimer?.cancel();
+              _hudTimer = Timer(const Duration(seconds: 4), () {
+                if (mounted) setState(() => _showHud = false);
+              });
             }
 
-            void _showServerSheet() {
-              _hideTimer?.cancel();
+            void _toggleHud() {
+              setState(() => _showHud = !_showHud);
+              if (_showHud) _startHudTimer();
+            }
+
+            void _showAudioLanguageSheet() {
+              _hudTimer?.cancel();
               showModalBottomSheet(
                 context: context,
                 backgroundColor: const Color(0xFF141414),
@@ -296,7 +425,7 @@ jobs:
                 builder: (ctx) {
                   return SafeArea(
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -304,13 +433,14 @@ jobs:
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              const Text('Select Stream Server', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                              const Text('Audio & Stream Options', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
                               IconButton(icon: const Icon(Icons.close, color: Colors.white54, size: 20), onPressed: () => Navigator.pop(ctx)),
                             ],
                           ),
                           const SizedBox(height: 8),
-                          ...List.generate(_servers.length, (idx) {
-                            final isSel = idx == _currentServer;
+                          ...List.generate(_audioOptions.length, (idx) {
+                            final isSel = idx == _selectedSourceIndex;
+                            final opt = _audioOptions[idx];
                             return Container(
                               margin: const EdgeInsets.symmetric(vertical: 4),
                               decoration: BoxDecoration(
@@ -320,17 +450,23 @@ jobs:
                               ),
                               child: ListTile(
                                 dense: true,
-                                leading: Icon(Icons.dns_rounded, color: isSel ? Colors.redAccent : Colors.white70, size: 20),
-                                title: Text(_servers[idx]['name']!, style: TextStyle(color: isSel ? Colors.redAccent : Colors.white, fontSize: 14, fontWeight: isSel ? FontWeight.bold : FontWeight.normal)),
+                                leading: Icon(
+                                  idx == 1 ? Icons.translate_rounded : (opt['badge'] == 'PAKISTANI DRAMA' ? Icons.live_tv_rounded : Icons.audiotrack_rounded),
+                                  color: isSel ? Colors.redAccent : Colors.white70,
+                                  size: 22,
+                                ),
+                                title: Text(opt['label']!, style: TextStyle(color: isSel ? Colors.redAccent : Colors.white, fontSize: 14, fontWeight: isSel ? FontWeight.bold : FontWeight.normal)),
+                                subtitle: Text(opt['badge']!, style: TextStyle(color: isSel ? Colors.redAccent.withOpacity(0.8) : Colors.white38, fontSize: 10.5, fontWeight: FontWeight.w600)),
                                 trailing: isSel ? const Icon(Icons.check_circle, color: Colors.redAccent, size: 18) : null,
                                 onTap: () {
                                   Navigator.pop(ctx);
                                   setState(() {
-                                    _currentServer = idx;
+                                    _selectedSourceIndex = idx;
                                     _isLoading = true;
+                                    _autoSwitched = false;
                                   });
-                                  _controller.loadRequest(Uri.parse(_servers[idx]['url']!));
-                                  _startHideTimer();
+                                  _controller.loadRequest(Uri.parse(opt['url']!));
+                                  _startHudTimer();
                                 },
                               ),
                             );
@@ -341,12 +477,13 @@ jobs:
                     ),
                   );
                 },
-              ).then((_) => _startHideTimer());
+              ).then((_) => _startHudTimer());
             }
 
             @override
             void dispose() {
-              _hideTimer?.cancel();
+              _hudTimer?.cancel();
+              _feedbackTimer?.cancel();
               SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
               SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
               WakelockPlus.disable();
@@ -362,12 +499,51 @@ jobs:
                     children: [
                       WebViewWidget(controller: _controller),
 
+                      // Gesture Zones: Left = -10s, Middle = Show/Hide, Right = +10s
                       Positioned.fill(
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
-                          onTap: _toggleControls,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.translucent,
+                                onDoubleTap: () => _seekBy(-10),
+                                onTap: _toggleHud,
+                              ),
+                            ),
+                            Expanded(
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.translucent,
+                                onDoubleTap: _togglePlayPause,
+                                onTap: _toggleHud,
+                              ),
+                            ),
+                            Expanded(
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.translucent,
+                                onDoubleTap: () => _seekBy(10),
+                                onTap: _toggleHud,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
+
+                      // Feedback Badge (+10s, -10s, etc)
+                      if (_feedbackText != null)
+                        Center(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+                            decoration: BoxDecoration(
+                              color: Colors.black87,
+                              borderRadius: BorderRadius.circular(25),
+                              border: Border.all(color: Colors.redAccent, width: 1.2),
+                            ),
+                            child: Text(
+                              _feedbackText!,
+                              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
 
                       if (_isLoading)
                         Container(
@@ -378,22 +554,26 @@ jobs:
                               children: [
                                 const CircularProgressIndicator(color: Colors.redAccent),
                                 const SizedBox(height: 16),
-                                Text('Connecting to ${_servers[_currentServer]['name']}...', style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                                Text(
+                                  'Loading ${_audioOptions[_selectedSourceIndex]['label']}...',
+                                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                                ),
                               ],
                             ),
                           ),
                         ),
 
+                      // Top Bar (Back button, Title & Audio/Language Button)
                       AnimatedOpacity(
-                        duration: const Duration(milliseconds: 300),
-                        opacity: _showControls ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 250),
+                        opacity: _showHud ? 1.0 : 0.0,
                         child: IgnorePointer(
-                          ignoring: !_showControls,
+                          ignoring: !_showHud,
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                             decoration: BoxDecoration(
                               gradient: LinearGradient(
-                                colors: [Colors.black.withOpacity(0.85), Colors.transparent],
+                                colors: [Colors.black.withOpacity(0.9), Colors.transparent],
                                 begin: Alignment.topCenter,
                                 end: Alignment.bottomCenter,
                               ),
@@ -406,7 +586,7 @@ jobs:
                                   child: Container(
                                     padding: const EdgeInsets.all(8),
                                     decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.4),
+                                      color: Colors.black54,
                                       shape: BoxShape.circle,
                                     ),
                                     child: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 18),
@@ -418,32 +598,83 @@ jobs:
                                     _resolvedTitle,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+                                    style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
                                   ),
                                 ),
                                 InkWell(
                                   borderRadius: BorderRadius.circular(20),
-                                  onTap: _showServerSheet,
+                                  onTap: _showAudioLanguageSheet,
                                   child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
                                     decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.55),
+                                      color: Colors.redAccent.withOpacity(0.2),
                                       borderRadius: BorderRadius.circular(20),
-                                      border: Border.all(color: Colors.white24, width: 0.8),
+                                      border: Border.all(color: Colors.redAccent, width: 0.9),
                                     ),
                                     child: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        const Icon(Icons.tune_rounded, color: Colors.redAccent, size: 14),
+                                        const Icon(Icons.translate_rounded, color: Colors.redAccent, size: 15),
                                         const SizedBox(width: 6),
-                                        Text('Server ${_currentServer + 1}', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                                        Text(
+                                          _audioOptions[_selectedSourceIndex]['badge']!,
+                                          style: const TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.bold),
+                                        ),
                                         const SizedBox(width: 4),
-                                        const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 14),
+                                        const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 15),
                                       ],
                                     ),
                                   ),
                                 ),
                               ],
+                            ),
+                          ),
+                        ),
+                      ),
+
+                      // Bottom Large Native Floating Controls Bar
+                      AnimatedOpacity(
+                        duration: const Duration(milliseconds: 250),
+                        opacity: _showHud ? 1.0 : 0.0,
+                        child: IgnorePointer(
+                          ignoring: !_showHud,
+                          child: Align(
+                            alignment: Alignment.bottomCenter,
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 16),
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.85),
+                                borderRadius: BorderRadius.circular(35),
+                                border: Border.all(color: Colors.white24, width: 0.8),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.replay_10_rounded, color: Colors.white, size: 30),
+                                    onPressed: () => _seekBy(-10),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  IconButton(
+                                    icon: const Icon(Icons.play_circle_filled_rounded, color: Colors.redAccent, size: 44),
+                                    onPressed: _togglePlayPause,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  IconButton(
+                                    icon: const Icon(Icons.forward_10_rounded, color: Colors.white, size: 30),
+                                    onPressed: () => _seekBy(10),
+                                  ),
+                                  const SizedBox(width: 16),
+                                  Container(height: 26, width: 1, color: Colors.white24),
+                                  const SizedBox(width: 12),
+                                  IconButton(
+                                    icon: const Icon(Icons.volume_up_rounded, color: Colors.white, size: 28),
+                                    onPressed: _unmuteAudio,
+                                    tooltip: 'Unmute',
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -456,49 +687,22 @@ jobs:
           }
           """
 
-          # 1. Clean all dead domains across entire lib folder
-          dead_domains = ['vidsrc.to', 'vidsrc.me', 'vidsrc.xyz', 'vidsrc.pm', 'vidsrc.net', '2embed.to', '2embed.cc']
           for root, _, files in os.walk('lib'):
               for f in files:
                   if f.endswith('.dart'):
                       p = os.path.join(root, f)
                       with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
                           c = fl.read()
-                      orig = c
-                      for d in dead_domains:
-                          c = c.replace(d, 'vidlink.pro')
-                      if c != orig:
+                      if ('Could not load the player' in c) or ('_currentServer' in c) or ('PlayerScreen' in c) or ('WatchScreen' in c):
+                          m = re.search(r'class\s+([A-Za-z0-9_]+)\s+extends\s+StatefulWidget', c)
+                          class_name = m.group(1) if m else 'PlayerScreen'
+                          code = master_player.replace('__CLASS_NAME__', class_name)
                           with open(p, 'w', encoding='utf-8') as fl:
-                              fl.write(c)
-                          print(f"Replaced dead domains in: {p}")
+                              fl.write(code)
 
-          # 2. Hunt every file that has the exact broken player error screen
-          targets = []
-          for root, _, files in os.walk('lib'):
-              for f in files:
-                  if f.endswith('.dart'):
-                      p = os.path.join(root, f)
-                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
-                          c = fl.read()
-                      if ('Could not load the player' in c) or ('ERR_NAME_NOT_RESOLVED' in c) or ('net::' in c and 'Retry' in c):
-                          targets.append(p)
-
-          print(f"Broken player files detected: {targets}")
-
-          for p in targets:
-              with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
-                  c = fl.read()
-              m = re.search(r'class\s+([A-Za-z0-9_]+)\s+extends\s+StatefulWidget', c)
-              class_name = m.group(1) if m else 'PlayerScreen'
-              print(f"Replacing broken player at: {p} (Using Class: {class_name})")
-              code = player_template.replace('__CLASS_NAME__', class_name)
-              with open(p, 'w', encoding='utf-8') as fl:
-                  fl.write(code)
-
-          # Also write to standard player locations
           for loc in ['lib/screens/player/player_screen.dart', 'lib/screens/player_screen.dart']:
               os.makedirs(os.path.dirname(loc), exist_ok=True)
-              code = player_template.replace('__CLASS_NAME__', 'PlayerScreen')
+              code = master_player.replace('__CLASS_NAME__', 'PlayerScreen')
               with open(loc, 'w', encoding='utf-8') as fl:
                   fl.write(code)
           EOF
@@ -546,7 +750,6 @@ jobs:
                           c = c.replace('thread.threadId()', 'thread.getId()')
                           with open(p, 'w', encoding='utf-8') as fl:
                               fl.write(c)
-                          print(f"Successfully auto-patched Java file: {p}")
           EOF
 
           cat << 'EOF' >> android/build.gradle
@@ -572,13 +775,11 @@ jobs:
             cd android && ./gradlew assembleRelease && cd ..
             APK_FILE=$(find android build -name "*.apk" 2>/dev/null | grep -E "release|app" | head -n 1)
           fi
-          echo "Found APK: $APK_FILE"
 
           mkdir -p build/app/outputs/flutter-apk
           TARGET_APK="build/app/outputs/flutter-apk/app-release.apk"
 
           BT_DIR=$(ls -d /usr/local/lib/android/sdk/build-tools/* | sort -V | tail -n 1)
-          echo "Using Android Build-Tools from: $BT_DIR"
 
           if [ ! -f ~/.android/debug.keystore ]; then
             mkdir -p ~/.android
@@ -588,7 +789,6 @@ jobs:
           $BT_DIR/zipalign -f -p 4 "$APK_FILE" aligned.apk
           $BT_DIR/apksigner sign --ks ~/.android/debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android --out "$TARGET_APK" aligned.apk
           $BT_DIR/apksigner verify --verbose "$TARGET_APK"
-          echo "APK successfully verified and signed with v2/v3 signatures!"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
