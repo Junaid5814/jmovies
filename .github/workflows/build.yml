@@ -88,12 +88,12 @@ jobs:
                       with open(p, 'w', encoding='utf-8') as fl: fl.write(t)
           EOF
 
-      - name: Inject Upgraded Gesture & Multi-Language Player
+      - name: Inject Clean MovieBox Player (Zero Double Controls)
         run: |
           python3 - << 'EOF'
           import os, re
 
-          master_player = """import 'dart:async';
+          moviebox_player = """import 'dart:async';
           import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
           import 'package:webview_flutter/webview_flutter.dart';
@@ -148,13 +148,10 @@ jobs:
 
           class ___CLASS_NAME__State extends State<__CLASS_NAME__> {
             late final WebViewController _controller;
-            int _selectedSourceIndex = 0;
-            bool _showHud = true;
-            Timer? _hudTimer;
+            int _selectedSource = 0;
+            bool _showBar = true;
+            Timer? _barTimer;
             bool _isLoading = true;
-            String? _feedbackText;
-            Timer? _feedbackTimer;
-            bool _autoSwitched = false;
 
             int get _resolvedId {
               if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
@@ -198,80 +195,57 @@ jobs:
               return false;
             }
 
-            bool get _isPakistaniDrama {
-              final t = _resolvedTitle.toLowerCase();
-              final pkKeywords = ['noor jahan', 'fraud', 'ertugrul', 'parizaad', 'tere bin', 'ishq murshid', 'fairy tale', 'khuda aur mohabbat'];
-              for (var k in pkKeywords) {
-                if (t.contains(k)) return true;
-              }
-              return false;
-            }
-
-            List<Map<String, String>> get _audioOptions {
+            List<Map<String, String>> get _streamSources {
               final id = _resolvedId;
               final s = widget.seasonNumber ?? widget.season ?? 1;
               final e = widget.episodeNumber ?? widget.episode ?? 1;
-              final qTitle = Uri.encodeComponent('$_resolvedTitle ep $e full episode HD');
 
               if (_resolvedIsTv) {
-                if (_isPakistaniDrama) {
-                  return [
-                    {
-                      'label': 'Urdu Official HD (Direct)',
-                      'badge': 'PAKISTANI DRAMA',
-                      'url': 'https://www.youtube.com/embed?listType=search&list=$qTitle&autoplay=1',
-                    },
-                    {
-                      'label': 'Hindi / Urdu Multi-Audio',
-                      'badge': 'DUBBED',
-                      'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e&autoplay=1',
-                    },
-                    {
-                      'label': 'English / Original HD',
-                      'badge': 'ULTRA HD',
-                      'url': 'https://vidlink.pro/tv/$id/$s/$e?autoplay=true',
-                    },
-                  ];
-                } else {
-                  return [
-                    {
-                      'label': 'English (Original Audio)',
-                      'badge': 'FAST HD',
-                      'url': 'https://vidlink.pro/tv/$id/$s/$e?autoplay=true',
-                    },
-                    {
-                      'label': 'Hindi Dubbed / Dual Audio',
-                      'badge': 'MULTI-AUDIO',
-                      'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e&autoplay=1',
-                    },
-                    {
-                      'label': 'Anime & Global Stream',
-                      'badge': 'SUB/DUB',
-                      'url': 'https://player.autoembed.cc/embed/tv/$id/$s/$e',
-                    },
-                    {
-                      'label': 'Alternative Official Stream',
-                      'badge': 'BACKUP',
-                      'url': 'https://www.youtube.com/embed?listType=search&list=$qTitle&autoplay=1',
-                    },
-                  ];
-                }
+                return [
+                  {
+                    'title': 'Hindi Dubbed / Multi-Audio',
+                    'subtitle': 'Hindi / Urdu Audio (Indian CDN)',
+                    'tag': 'Hindi Dub',
+                    'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e&autoplay=1',
+                  },
+                  {
+                    'title': 'Original Audio (English)',
+                    'subtitle': 'High Speed 1080p Stream',
+                    'tag': 'Original',
+                    'url': 'https://vidlink.pro/tv/$id/$s/$e?autoplay=true',
+                  },
+                  {
+                    'title': 'Anime & Asian Dramas',
+                    'subtitle': 'Doraemon / K-Dramas / Anime Stream',
+                    'tag': 'Anime HD',
+                    'url': 'https://embed.su/embed/tv/$id/$s/$e',
+                  },
+                  {
+                    'title': 'Global Fast Mirror',
+                    'subtitle': 'Alternative High Quality Server',
+                    'tag': 'Mirror 2',
+                    'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e',
+                  },
+                ];
               } else {
                 return [
                   {
-                    'label': 'English (Original Audio)',
-                    'badge': 'FAST HD',
-                    'url': 'https://vidlink.pro/movie/$id?autoplay=true',
-                  },
-                  {
-                    'label': 'Hindi Dubbed / Multi-Audio',
-                    'badge': 'MULTI-AUDIO',
+                    'title': 'Hindi Dubbed / Multi-Audio',
+                    'subtitle': 'Hindi Audio (Indian CDN)',
+                    'tag': 'Hindi Dub',
                     'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&autoplay=1',
                   },
                   {
-                    'label': 'Ultra Stream (Backup)',
-                    'badge': '1080P',
-                    'url': 'https://vidsrc.cc/v2/embed/movie/$id',
+                    'title': 'Original Audio (English)',
+                    'subtitle': 'High Speed 1080p Stream',
+                    'tag': 'Original',
+                    'url': 'https://vidlink.pro/movie/$id?autoplay=true',
+                  },
+                  {
+                    'title': 'Global 4K Mirror',
+                    'subtitle': 'Alternative Ultra HD Server',
+                    'tag': 'Mirror 2',
+                    'url': 'https://embed.su/embed/movie/$id',
                   },
                 ];
               }
@@ -289,16 +263,8 @@ jobs:
 
               _controller = WebViewController()
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
-                ..setUserAgent('Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36')
+                ..setUserAgent('Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36')
                 ..setBackgroundColor(Colors.black)
-                ..addJavaScriptChannel(
-                  'StreamWatcher',
-                  onMessageReceived: (JavaScriptMessage msg) {
-                    if (msg.message == 'NOT_AVAILABLE') {
-                      _handleStreamFailure();
-                    }
-                  },
-                )
                 ..setNavigationDelegate(
                   NavigationDelegate(
                     onPageStarted: (_) {
@@ -306,7 +272,7 @@ jobs:
                     },
                     onPageFinished: (_) {
                       if (mounted) setState(() => _isLoading = false);
-                      _injectAutoTriggerAndObserver();
+                      _triggerAutoPlay();
                     },
                     onNavigationRequest: (req) {
                       final u = req.url.toLowerCase();
@@ -314,8 +280,7 @@ jobs:
                           u.startsWith('about:') ||
                           u.contains('vidlink') ||
                           u.contains('multiembed') ||
-                          u.contains('autoembed') ||
-                          u.contains('youtube') ||
+                          u.contains('embed.su') ||
                           u.contains('vidsrc') ||
                           u.contains('m3u8') ||
                           u.contains('mp4')) {
@@ -325,97 +290,42 @@ jobs:
                     },
                   ),
                 )
-                ..loadRequest(Uri.parse(_audioOptions[_selectedSourceIndex]['url']!));
+                ..loadRequest(Uri.parse(_streamSources[_selectedSource]['url']!));
 
-              _startHudTimer();
+              _startTimer();
             }
 
-            void _handleStreamFailure() {
-              if (_autoSwitched) return;
-              _autoSwitched = true;
-              if (mounted) {
-                _triggerFeedback('Switching to alternate stream... 🔄');
-                Timer(const Duration(seconds: 1), () {
-                  if (mounted && _selectedSourceIndex + 1 < _audioOptions.length) {
-                    setState(() {
-                      _selectedSourceIndex++;
-                      _isLoading = true;
-                    });
-                    _controller.loadRequest(Uri.parse(_audioOptions[_selectedSourceIndex]['url']!));
-                  }
-                });
-              }
-            }
-
-            void _injectAutoTriggerAndObserver() {
+            void _triggerAutoPlay() {
               const js = '''
                 (function() {
                   window.open = function() { return null; };
-
-                  function checkNotAvailable() {
-                    var bodyText = document.body ? document.body.innerText : '';
-                    if (bodyText.includes("Couldn't Find This Content") || 
-                        bodyText.includes("Not Available") || 
-                        bodyText.includes("404 Not Found") || 
-                        bodyText.includes("Video not found")) {
-                      StreamWatcher.postMessage('NOT_AVAILABLE');
-                    }
-                  }
-
                   setInterval(function() {
-                    checkNotAvailable();
                     var btn = document.querySelector('.play-btn, .vjs-big-play-button, button[aria-label="Play"], #play, .jw-display-icon-display, svg[data-icon="play"]');
                     if (btn) btn.click();
                     var v = document.querySelector('video');
                     if (v && v.paused) {
                       v.play().catch(function(){});
                     }
-                  }, 500);
+                  }, 600);
                 })();
               ''';
               _controller.runJavaScript(js).catchError((_) {});
             }
 
-            void _seekBy(int seconds) {
-              final js = "var v = document.querySelector('video'); if(v) { v.currentTime += $seconds; }";
-              _controller.runJavaScript(js).catchError((_) {});
-              _triggerFeedback(seconds > 0 ? '+$seconds Sec ⏩' : '$seconds Sec ⏪');
-            }
-
-            void _togglePlayPause() {
-              const js = "var v = document.querySelector('video'); if(v) { if(v.paused) { v.play(); } else { v.pause(); } }";
-              _controller.runJavaScript(js).catchError((_) {});
-              _triggerFeedback('Play / Pause ⏯️');
-            }
-
-            void _unmuteAudio() {
-              const js = "var v = document.querySelector('video'); if(v) { v.muted = false; v.volume = 1.0; }";
-              _controller.runJavaScript(js).catchError((_) {});
-              _triggerFeedback('Audio Unmuted 🔊');
-            }
-
-            void _triggerFeedback(String text) {
-              setState(() => _feedbackText = text);
-              _feedbackTimer?.cancel();
-              _feedbackTimer = Timer(const Duration(milliseconds: 1400), () {
-                if (mounted) setState(() => _feedbackText = null);
+            void _startTimer() {
+              _barTimer?.cancel();
+              _barTimer = Timer(const Duration(seconds: 4), () {
+                if (mounted) setState(() => _showBar = false);
               });
             }
 
-            void _startHudTimer() {
-              _hudTimer?.cancel();
-              _hudTimer = Timer(const Duration(seconds: 4), () {
-                if (mounted) setState(() => _showHud = false);
-              });
+            void _toggleBar() {
+              setState(() => _showBar = !_showBar);
+              if (_showBar) _startTimer();
             }
 
-            void _toggleHud() {
-              setState(() => _showHud = !_showHud);
-              if (_showHud) _startHudTimer();
-            }
-
-            void _showAudioLanguageSheet() {
-              _hudTimer?.cancel();
+            void _showLanguagePicker() {
+              _barTimer?.cancel();
               showModalBottomSheet(
                 context: context,
                 backgroundColor: const Color(0xFF141414),
@@ -433,14 +343,14 @@ jobs:
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              const Text('Audio & Stream Options', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                              const Text('Select Language & Audio', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
                               IconButton(icon: const Icon(Icons.close, color: Colors.white54, size: 20), onPressed: () => Navigator.pop(ctx)),
                             ],
                           ),
                           const SizedBox(height: 8),
-                          ...List.generate(_audioOptions.length, (idx) {
-                            final isSel = idx == _selectedSourceIndex;
-                            final opt = _audioOptions[idx];
+                          ...List.generate(_streamSources.length, (idx) {
+                            final isSel = idx == _selectedSource;
+                            final s = _streamSources[idx];
                             return Container(
                               margin: const EdgeInsets.symmetric(vertical: 4),
                               decoration: BoxDecoration(
@@ -451,22 +361,21 @@ jobs:
                               child: ListTile(
                                 dense: true,
                                 leading: Icon(
-                                  idx == 1 ? Icons.translate_rounded : (opt['badge'] == 'PAKISTANI DRAMA' ? Icons.live_tv_rounded : Icons.audiotrack_rounded),
+                                  idx == 0 ? Icons.translate_rounded : (idx == 1 ? Icons.language_rounded : Icons.dns_rounded),
                                   color: isSel ? Colors.redAccent : Colors.white70,
                                   size: 22,
                                 ),
-                                title: Text(opt['label']!, style: TextStyle(color: isSel ? Colors.redAccent : Colors.white, fontSize: 14, fontWeight: isSel ? FontWeight.bold : FontWeight.normal)),
-                                subtitle: Text(opt['badge']!, style: TextStyle(color: isSel ? Colors.redAccent.withOpacity(0.8) : Colors.white38, fontSize: 10.5, fontWeight: FontWeight.w600)),
+                                title: Text(s['title']!, style: TextStyle(color: isSel ? Colors.redAccent : Colors.white, fontSize: 13.5, fontWeight: isSel ? FontWeight.bold : FontWeight.normal)),
+                                subtitle: Text(s['subtitle']!, style: TextStyle(color: isSel ? Colors.redAccent.withOpacity(0.8) : Colors.white38, fontSize: 11)),
                                 trailing: isSel ? const Icon(Icons.check_circle, color: Colors.redAccent, size: 18) : null,
                                 onTap: () {
                                   Navigator.pop(ctx);
                                   setState(() {
-                                    _selectedSourceIndex = idx;
+                                    _selectedSource = idx;
                                     _isLoading = true;
-                                    _autoSwitched = false;
                                   });
-                                  _controller.loadRequest(Uri.parse(opt['url']!));
-                                  _startHudTimer();
+                                  _controller.loadRequest(Uri.parse(s['url']!));
+                                  _startTimer();
                                 },
                               ),
                             );
@@ -477,13 +386,12 @@ jobs:
                     ),
                   );
                 },
-              ).then((_) => _startHudTimer());
+              ).then((_) => _startTimer());
             }
 
             @override
             void dispose() {
-              _hudTimer?.cancel();
-              _feedbackTimer?.cancel();
+              _barTimer?.cancel();
               SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
               SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
               WakelockPlus.disable();
@@ -492,58 +400,24 @@ jobs:
 
             @override
             Widget build(BuildContext context) {
+              final active = _streamSources[_selectedSource];
+
               return Scaffold(
                 backgroundColor: Colors.black,
                 body: SafeArea(
                   child: Stack(
                     children: [
+                      // Native HTML5 player with clean single controls
                       WebViewWidget(controller: _controller),
 
-                      // Gesture Zones: Left = -10s, Middle = Show/Hide, Right = +10s
-                      Positioned.fill(
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: GestureDetector(
-                                behavior: HitTestBehavior.translucent,
-                                onDoubleTap: () => _seekBy(-10),
-                                onTap: _toggleHud,
-                              ),
-                            ),
-                            Expanded(
-                              child: GestureDetector(
-                                behavior: HitTestBehavior.translucent,
-                                onDoubleTap: _togglePlayPause,
-                                onTap: _toggleHud,
-                              ),
-                            ),
-                            Expanded(
-                              child: GestureDetector(
-                                behavior: HitTestBehavior.translucent,
-                                onDoubleTap: () => _seekBy(10),
-                                onTap: _toggleHud,
-                              ),
-                            ),
-                          ],
+                      // Touch sensor to toggle sleek header
+                      Positioned(
+                        top: 0, left: 0, right: 0, height: 75,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.translucent,
+                          onTap: _toggleBar,
                         ),
                       ),
-
-                      // Feedback Badge (+10s, -10s, etc)
-                      if (_feedbackText != null)
-                        Center(
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
-                            decoration: BoxDecoration(
-                              color: Colors.black87,
-                              borderRadius: BorderRadius.circular(25),
-                              border: Border.all(color: Colors.redAccent, width: 1.2),
-                            ),
-                            child: Text(
-                              _feedbackText!,
-                              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                        ),
 
                       if (_isLoading)
                         Container(
@@ -555,7 +429,7 @@ jobs:
                                 const CircularProgressIndicator(color: Colors.redAccent),
                                 const SizedBox(height: 16),
                                 Text(
-                                  'Loading ${_audioOptions[_selectedSourceIndex]['label']}...',
+                                  'Loading ${active['tag']}...',
                                   style: const TextStyle(color: Colors.white70, fontSize: 13),
                                 ),
                               ],
@@ -563,17 +437,17 @@ jobs:
                           ),
                         ),
 
-                      // Top Bar (Back button, Title & Audio/Language Button)
+                      // Minimalist Auto-Hiding Top Bar
                       AnimatedOpacity(
                         duration: const Duration(milliseconds: 250),
-                        opacity: _showHud ? 1.0 : 0.0,
+                        opacity: _showBar ? 1.0 : 0.0,
                         child: IgnorePointer(
-                          ignoring: !_showHud,
+                          ignoring: !_showBar,
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                             decoration: BoxDecoration(
                               gradient: LinearGradient(
-                                colors: [Colors.black.withOpacity(0.9), Colors.transparent],
+                                colors: [Colors.black.withOpacity(0.85), Colors.transparent],
                                 begin: Alignment.topCenter,
                                 end: Alignment.bottomCenter,
                               ),
@@ -584,97 +458,49 @@ jobs:
                                   borderRadius: BorderRadius.circular(20),
                                   onTap: () => Navigator.pop(context),
                                   child: Container(
-                                    padding: const EdgeInsets.all(8),
+                                    padding: const EdgeInsets.all(7),
                                     decoration: BoxDecoration(
-                                      color: Colors.black54,
+                                      color: Colors.black.withOpacity(0.6),
                                       shape: BoxShape.circle,
                                     ),
                                     child: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 18),
                                   ),
                                 ),
-                                const SizedBox(width: 14),
+                                const SizedBox(width: 12),
                                 Expanded(
                                   child: Text(
                                     _resolvedTitle,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                                    style: const TextStyle(color: Colors.white, fontSize: 14.5, fontWeight: FontWeight.bold),
                                   ),
                                 ),
                                 InkWell(
                                   borderRadius: BorderRadius.circular(20),
-                                  onTap: _showAudioLanguageSheet,
+                                  onTap: _showLanguagePicker,
                                   child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                                     decoration: BoxDecoration(
-                                      color: Colors.redAccent.withOpacity(0.2),
+                                      color: Colors.black.withOpacity(0.7),
                                       borderRadius: BorderRadius.circular(20),
-                                      border: Border.all(color: Colors.redAccent, width: 0.9),
+                                      border: Border.all(color: Colors.redAccent.withOpacity(0.7), width: 1.0),
                                     ),
                                     child: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        const Icon(Icons.translate_rounded, color: Colors.redAccent, size: 15),
+                                        const Icon(Icons.translate_rounded, color: Colors.redAccent, size: 14),
                                         const SizedBox(width: 6),
                                         Text(
-                                          _audioOptions[_selectedSourceIndex]['badge']!,
+                                          active['tag']!,
                                           style: const TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.bold),
                                         ),
                                         const SizedBox(width: 4),
-                                        const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 15),
+                                        const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 14),
                                       ],
                                     ),
                                   ),
                                 ),
                               ],
-                            ),
-                          ),
-                        ),
-                      ),
-
-                      // Bottom Large Native Floating Controls Bar
-                      AnimatedOpacity(
-                        duration: const Duration(milliseconds: 250),
-                        opacity: _showHud ? 1.0 : 0.0,
-                        child: IgnorePointer(
-                          ignoring: !_showHud,
-                          child: Align(
-                            alignment: Alignment.bottomCenter,
-                            child: Container(
-                              margin: const EdgeInsets.only(bottom: 16),
-                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.85),
-                                borderRadius: BorderRadius.circular(35),
-                                border: Border.all(color: Colors.white24, width: 0.8),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.replay_10_rounded, color: Colors.white, size: 30),
-                                    onPressed: () => _seekBy(-10),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  IconButton(
-                                    icon: const Icon(Icons.play_circle_filled_rounded, color: Colors.redAccent, size: 44),
-                                    onPressed: _togglePlayPause,
-                                  ),
-                                  const SizedBox(width: 12),
-                                  IconButton(
-                                    icon: const Icon(Icons.forward_10_rounded, color: Colors.white, size: 30),
-                                    onPressed: () => _seekBy(10),
-                                  ),
-                                  const SizedBox(width: 16),
-                                  Container(height: 26, width: 1, color: Colors.white24),
-                                  const SizedBox(width: 12),
-                                  IconButton(
-                                    icon: const Icon(Icons.volume_up_rounded, color: Colors.white, size: 28),
-                                    onPressed: _unmuteAudio,
-                                    tooltip: 'Unmute',
-                                  ),
-                                ],
-                              ),
                             ),
                           ),
                         ),
@@ -696,18 +522,18 @@ jobs:
                       if ('Could not load the player' in c) or ('_currentServer' in c) or ('PlayerScreen' in c) or ('WatchScreen' in c):
                           m = re.search(r'class\s+([A-Za-z0-9_]+)\s+extends\s+StatefulWidget', c)
                           class_name = m.group(1) if m else 'PlayerScreen'
-                          code = master_player.replace('__CLASS_NAME__', class_name)
+                          code = moviebox_player.replace('__CLASS_NAME__', class_name)
                           with open(p, 'w', encoding='utf-8') as fl:
                               fl.write(code)
 
           for loc in ['lib/screens/player/player_screen.dart', 'lib/screens/player_screen.dart']:
               os.makedirs(os.path.dirname(loc), exist_ok=True)
-              code = master_player.replace('__CLASS_NAME__', 'PlayerScreen')
+              code = moviebox_player.replace('__CLASS_NAME__', 'PlayerScreen')
               with open(loc, 'w', encoding='utf-8') as fl:
                   fl.write(code)
           EOF
 
-      - name: Patch Android SDK 35, Proguard & Java Baklava Fix
+      - name: Patch Android SDK 35 & Proguard
         run: |
           python3 - << 'EOF'
           import os, re
@@ -766,7 +592,7 @@ jobs:
           }
           EOF
 
-      - name: Build and Sign Valid APK (v2 & v3 Scheme)
+      - name: Build and Sign Valid APK
         run: |
           flutter build apk --release || true
 
