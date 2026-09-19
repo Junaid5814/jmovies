@@ -38,9 +38,9 @@ jobs:
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
-      - name: Add Dependencies
+      - name: Add Native Dependencies
         run: |
-          flutter pub add carousel_slider:^5.0.0 webview_flutter wakelock_plus
+          flutter pub add carousel_slider:^5.0.0 webview_flutter wakelock_plus video_player
           flutter pub get
 
       - name: Setup Tokens & .env File
@@ -88,14 +88,15 @@ jobs:
                       with open(p, 'w', encoding='utf-8') as fl: fl.write(t)
           EOF
 
-      - name: Inject Clean MovieBox Player (Zero Double Controls)
+      - name: Inject Netflix Native Custom Player
         run: |
           python3 - << 'EOF'
           import os, re
 
-          moviebox_player = """import 'dart:async';
+          netflix_player = """import 'dart:async';
           import 'package:flutter/material.dart';
           import 'package:flutter/services.dart';
+          import 'package:video_player/video_player.dart';
           import 'package:webview_flutter/webview_flutter.dart';
           import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -147,11 +148,18 @@ jobs:
           }
 
           class ___CLASS_NAME__State extends State<__CLASS_NAME__> {
-            late final WebViewController _controller;
-            int _selectedSource = 0;
-            bool _showBar = true;
-            Timer? _barTimer;
-            bool _isLoading = true;
+            VideoPlayerController? _videoController;
+            WebViewController? _snifferController;
+
+            int _currentSourceIndex = 0;
+            bool _isExtracting = true;
+            bool _showControls = true;
+            bool _isBuffering = false;
+            double _playbackSpeed = 1.0;
+            BoxFit _currentFit = BoxFit.contain;
+            Timer? _hideControlsTimer;
+            String? _overlayFeedback;
+            Timer? _feedbackTimer;
 
             int get _resolvedId {
               if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
@@ -195,7 +203,7 @@ jobs:
               return false;
             }
 
-            List<Map<String, String>> get _streamSources {
+            List<Map<String, String>> get _audioStreams {
               final id = _resolvedId;
               final s = widget.seasonNumber ?? widget.season ?? 1;
               final e = widget.episodeNumber ?? widget.episode ?? 1;
@@ -203,49 +211,42 @@ jobs:
               if (_resolvedIsTv) {
                 return [
                   {
-                    'title': 'Hindi Dubbed / Multi-Audio',
-                    'subtitle': 'Hindi / Urdu Audio (Indian CDN)',
+                    'label': 'Hindi Dubbed / Multi-Audio',
                     'tag': 'Hindi Dub',
-                    'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e&autoplay=1',
+                    'embed': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e&autoplay=1',
                   },
                   {
-                    'title': 'Original Audio (English)',
-                    'subtitle': 'High Speed 1080p Stream',
-                    'tag': 'Original',
-                    'url': 'https://vidlink.pro/tv/$id/$s/$e?autoplay=true',
+                    'label': 'Original Audio (English HD)',
+                    'tag': 'English HD',
+                    'embed': 'https://vidlink.pro/tv/$id/$s/$e?autoplay=true',
                   },
                   {
-                    'title': 'Anime & Asian Dramas',
-                    'subtitle': 'Doraemon / K-Dramas / Anime Stream',
+                    'label': 'Anime & Asian Shows',
                     'tag': 'Anime HD',
-                    'url': 'https://embed.su/embed/tv/$id/$s/$e',
+                    'embed': 'https://embed.su/embed/tv/$id/$s/$e',
                   },
                   {
-                    'title': 'Global Fast Mirror',
-                    'subtitle': 'Alternative High Quality Server',
-                    'tag': 'Mirror 2',
-                    'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e',
+                    'label': 'Global Fast Backup',
+                    'tag': 'Fast Server',
+                    'embed': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e',
                   },
                 ];
               } else {
                 return [
                   {
-                    'title': 'Hindi Dubbed / Multi-Audio',
-                    'subtitle': 'Hindi Audio (Indian CDN)',
+                    'label': 'Hindi Dubbed / Multi-Audio',
                     'tag': 'Hindi Dub',
-                    'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&autoplay=1',
+                    'embed': 'https://multiembed.mov/?video_id=$id&tmdb=1&autoplay=1',
                   },
                   {
-                    'title': 'Original Audio (English)',
-                    'subtitle': 'High Speed 1080p Stream',
-                    'tag': 'Original',
-                    'url': 'https://vidlink.pro/movie/$id?autoplay=true',
+                    'label': 'Original Audio (English HD)',
+                    'tag': 'English HD',
+                    'embed': 'https://vidlink.pro/movie/$id?autoplay=true',
                   },
                   {
-                    'title': 'Global 4K Mirror',
-                    'subtitle': 'Alternative Ultra HD Server',
-                    'tag': 'Mirror 2',
-                    'url': 'https://embed.su/embed/movie/$id',
+                    'label': 'Ultra 4K Server',
+                    'tag': 'Ultra HD',
+                    'embed': 'https://embed.su/embed/movie/$id',
                   },
                 ];
               }
@@ -261,81 +262,165 @@ jobs:
               SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
               WakelockPlus.enable();
 
-              _controller = WebViewController()
+              _initStreamExtraction(_currentSourceIndex);
+              _startHideControlsTimer();
+            }
+
+            void _initStreamExtraction(int index) {
+              setState(() {
+                _isExtracting = true;
+                _isBuffering = true;
+              });
+
+              final targetEmbed = _audioStreams[index]['embed']!;
+              bool streamFound = false;
+
+              _snifferController = WebViewController()
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
                 ..setUserAgent('Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36')
-                ..setBackgroundColor(Colors.black)
                 ..setNavigationDelegate(
                   NavigationDelegate(
-                    onPageStarted: (_) {
-                      if (mounted) setState(() => _isLoading = true);
-                    },
-                    onPageFinished: (_) {
-                      if (mounted) setState(() => _isLoading = false);
-                      _triggerAutoPlay();
-                    },
                     onNavigationRequest: (req) {
-                      final u = req.url.toLowerCase();
-                      if (u.startsWith('blob:') ||
-                          u.startsWith('about:') ||
-                          u.contains('vidlink') ||
-                          u.contains('multiembed') ||
-                          u.contains('embed.su') ||
-                          u.contains('vidsrc') ||
-                          u.contains('m3u8') ||
-                          u.contains('mp4')) {
-                        return NavigationDecision.navigate;
+                      final u = req.url;
+                      if (!streamFound && (u.contains('.m3u8') || u.contains('.mp4') || u.contains('/stream/'))) {
+                        streamFound = true;
+                        _launchNativeStream(u);
+                        return NavigationDecision.prevent;
                       }
-                      return NavigationDecision.prevent;
+                      return NavigationDecision.navigate;
                     },
                   ),
                 )
-                ..loadRequest(Uri.parse(_streamSources[_selectedSource]['url']!));
+                ..loadRequest(Uri.parse(targetEmbed));
 
-              _startTimer();
-            }
-
-            void _triggerAutoPlay() {
-              const js = '''
-                (function() {
-                  window.open = function() { return null; };
-                  setInterval(function() {
-                    var btn = document.querySelector('.play-btn, .vjs-big-play-button, button[aria-label="Play"], #play, .jw-display-icon-display, svg[data-icon="play"]');
-                    if (btn) btn.click();
-                    var v = document.querySelector('video');
-                    if (v && v.paused) {
-                      v.play().catch(function(){});
-                    }
-                  }, 600);
-                })();
-              ''';
-              _controller.runJavaScript(js).catchError((_) {});
-            }
-
-            void _startTimer() {
-              _barTimer?.cancel();
-              _barTimer = Timer(const Duration(seconds: 4), () {
-                if (mounted) setState(() => _showBar = false);
+              // Fallback timeout if sniffer takes more than 6s
+              Timer(const Duration(seconds: 6), () {
+                if (!streamFound && mounted && _videoController == null) {
+                  _launchNativeStream(targetEmbed, isDirect: false);
+                }
               });
             }
 
-            void _toggleBar() {
-              setState(() => _showBar = !_showBar);
-              if (_showBar) _startTimer();
+            Future<void> _launchNativeStream(String streamUrl, {bool isDirect = true}) async {
+              try {
+                await _videoController?.dispose();
+                final controller = VideoPlayerController.networkUrl(
+                  Uri.parse(streamUrl),
+                  httpHeaders: const {
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Mobile)',
+                    'Referer': 'https://multiembed.mov/',
+                  },
+                );
+
+                await controller.initialize();
+                controller.addListener(() {
+                  if (mounted) {
+                    setState(() {
+                      _isBuffering = controller.value.isBuffering;
+                    });
+                  }
+                });
+
+                await controller.play();
+
+                if (mounted) {
+                  setState(() {
+                    _videoController = controller;
+                    _isExtracting = false;
+                    _isBuffering = false;
+                  });
+                }
+              } catch (e) {
+                // If stream error, try next server
+                if (_currentSourceIndex + 1 < _audioStreams.length) {
+                  _switchSource(_currentSourceIndex + 1);
+                } else {
+                  if (mounted) {
+                    setState(() {
+                      _isExtracting = false;
+                      _isBuffering = false;
+                    });
+                  }
+                }
+              }
             }
 
-            void _showLanguagePicker() {
-              _barTimer?.cancel();
+            void _switchSource(int index) {
+              if (index == _currentSourceIndex && _videoController != null) return;
+              _currentSourceIndex = index;
+              _videoController?.pause();
+              _videoController?.dispose();
+              _videoController = null;
+              _initStreamExtraction(index);
+            }
+
+            void _togglePlayPause() {
+              if (_videoController == null) return;
+              setState(() {
+                if (_videoController!.value.isPlaying) {
+                  _videoController!.pause();
+                  _showFeedback('Paused');
+                } else {
+                  _videoController!.play();
+                  _showFeedback('Playing');
+                }
+              });
+              _startHideControlsTimer();
+            }
+
+            void _seekRelative(int seconds) {
+              if (_videoController == null) return;
+              final current = _videoController!.value.position;
+              final target = current + Duration(seconds: seconds);
+              _videoController!.seekTo(target);
+              _showFeedback(seconds > 0 ? '+$seconds sec' : '$seconds sec');
+              _startHideControlsTimer();
+            }
+
+            void _showFeedback(String msg) {
+              setState(() => _overlayFeedback = msg);
+              _feedbackTimer?.cancel();
+              _feedbackTimer = Timer(const Duration(milliseconds: 900), () {
+                if (mounted) setState(() => _overlayFeedback = null);
+              });
+            }
+
+            void _startHideControlsTimer() {
+              _hideControlsTimer?.cancel();
+              _hideControlsTimer = Timer(const Duration(seconds: 4), () {
+                if (mounted && (_videoController?.value.isPlaying ?? false)) {
+                  setState(() => _showControls = false);
+                }
+              });
+            }
+
+            void _toggleControls() {
+              setState(() => _showControls = !_showControls);
+              if (_showControls) _startHideControlsTimer();
+            }
+
+            String _formatDuration(Duration d) {
+              final hours = d.inHours;
+              final minutes = d.inMinutes.remainder(60);
+              final seconds = d.inSeconds.remainder(60);
+              if (hours > 0) {
+                return '$hours:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+              }
+              return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+            }
+
+            void _showAudioLanguagePicker() {
+              _hideControlsTimer?.cancel();
               showModalBottomSheet(
                 context: context,
                 backgroundColor: const Color(0xFF141414),
                 shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
                 ),
                 builder: (ctx) {
                   return SafeArea(
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 18),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -343,39 +428,33 @@ jobs:
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              const Text('Select Language & Audio', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                              const Text('Audio & Dub Options', style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
                               IconButton(icon: const Icon(Icons.close, color: Colors.white54, size: 20), onPressed: () => Navigator.pop(ctx)),
                             ],
                           ),
                           const SizedBox(height: 8),
-                          ...List.generate(_streamSources.length, (idx) {
-                            final isSel = idx == _selectedSource;
-                            final s = _streamSources[idx];
+                          ...List.generate(_audioStreams.length, (idx) {
+                            final isSel = idx == _currentSourceIndex;
+                            final s = _audioStreams[idx];
                             return Container(
-                              margin: const EdgeInsets.symmetric(vertical: 4),
+                              margin: const EdgeInsets.symmetric(vertical: 5),
                               decoration: BoxDecoration(
-                                color: isSel ? Colors.redAccent.withOpacity(0.15) : Colors.white.withOpacity(0.04),
-                                borderRadius: BorderRadius.circular(10),
+                                color: isSel ? Colors.redAccent.withOpacity(0.18) : Colors.white.withOpacity(0.04),
+                                borderRadius: BorderRadius.circular(12),
                                 border: Border.all(color: isSel ? Colors.redAccent : Colors.transparent),
                               ),
                               child: ListTile(
                                 dense: true,
                                 leading: Icon(
-                                  idx == 0 ? Icons.translate_rounded : (idx == 1 ? Icons.language_rounded : Icons.dns_rounded),
+                                  idx == 0 ? Icons.translate_rounded : Icons.audiotrack_rounded,
                                   color: isSel ? Colors.redAccent : Colors.white70,
-                                  size: 22,
                                 ),
-                                title: Text(s['title']!, style: TextStyle(color: isSel ? Colors.redAccent : Colors.white, fontSize: 13.5, fontWeight: isSel ? FontWeight.bold : FontWeight.normal)),
-                                subtitle: Text(s['subtitle']!, style: TextStyle(color: isSel ? Colors.redAccent.withOpacity(0.8) : Colors.white38, fontSize: 11)),
-                                trailing: isSel ? const Icon(Icons.check_circle, color: Colors.redAccent, size: 18) : null,
+                                title: Text(s['label']!, style: TextStyle(color: isSel ? Colors.redAccent : Colors.white, fontWeight: isSel ? FontWeight.bold : FontWeight.normal)),
+                                subtitle: Text(s['tag']!, style: TextStyle(color: isSel ? Colors.redAccent.withOpacity(0.8) : Colors.white38, fontSize: 11)),
+                                trailing: isSel ? const Icon(Icons.check_circle, color: Colors.redAccent) : null,
                                 onTap: () {
                                   Navigator.pop(ctx);
-                                  setState(() {
-                                    _selectedSource = idx;
-                                    _isLoading = true;
-                                  });
-                                  _controller.loadRequest(Uri.parse(s['url']!));
-                                  _startTimer();
+                                  _switchSource(idx);
                                 },
                               ),
                             );
@@ -386,12 +465,14 @@ jobs:
                     ),
                   );
                 },
-              ).then((_) => _startTimer());
+              ).then((_) => _startHideControlsTimer());
             }
 
             @override
             void dispose() {
-              _barTimer?.cancel();
+              _hideControlsTimer?.cancel();
+              _feedbackTimer?.cancel();
+              _videoController?.dispose();
               SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
               SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
               WakelockPlus.disable();
@@ -400,104 +481,257 @@ jobs:
 
             @override
             Widget build(BuildContext context) {
-              final active = _streamSources[_selectedSource];
+              final activeSource = _audioStreams[_currentSourceIndex];
+              final hasValidPlayer = _videoController != null && _videoController!.value.isInitialized;
 
               return Scaffold(
                 backgroundColor: Colors.black,
                 body: SafeArea(
                   child: Stack(
+                    fit: StackFit.expand,
                     children: [
-                      // Native HTML5 player with clean single controls
-                      WebViewWidget(controller: _controller),
+                      // Native Video Surface
+                      if (hasValidPlayer)
+                        Center(
+                          child: FittedBox(
+                            fit: _currentFit,
+                            child: SizedBox(
+                              width: _videoController!.value.size.width,
+                              height: _videoController!.value.size.height,
+                              child: VideoPlayer(_videoController!),
+                            ),
+                          ),
+                        )
+                      else
+                        // Background sniffer webview running silently off-screen
+                        if (_snifferController != null)
+                          Opacity(
+                            opacity: 0.01,
+                            child: WebViewWidget(controller: _snifferController!),
+                          ),
 
-                      // Touch sensor to toggle sleek header
-                      Positioned(
-                        top: 0, left: 0, right: 0, height: 75,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
-                          onTap: _toggleBar,
-                        ),
+                      // Gesture Detector for Controls & Seek
+                      GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onTap: _toggleControls,
+                        onDoubleTapDown: (details) {
+                          final screenWidth = MediaQuery.of(context).size.width;
+                          if (details.globalPosition.dx < screenWidth / 2) {
+                            _seekRelative(-10);
+                          } else {
+                            _seekRelative(10);
+                          }
+                        },
                       ),
 
-                      if (_isLoading)
+                      // Netflix Buffering / Loading State
+                      if (_isExtracting || _isBuffering)
                         Container(
-                          color: Colors.black,
+                          color: _isExtracting ? Colors.black : Colors.black26,
                           child: Center(
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const CircularProgressIndicator(color: Colors.redAccent),
+                                const CircularProgressIndicator(color: Colors.redAccent, strokeWidth: 3),
                                 const SizedBox(height: 16),
                                 Text(
-                                  'Loading ${active['tag']}...',
-                                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                                  _isExtracting ? 'Opening ${activeSource['tag']}...' : 'Buffering HD stream...',
+                                  style: const TextStyle(color: Colors.white70, fontSize: 13, letterSpacing: 0.5),
                                 ),
                               ],
                             ),
                           ),
                         ),
 
-                      // Minimalist Auto-Hiding Top Bar
+                      // Center Feedback Pill (e.g. +10s, Paused)
+                      if (_overlayFeedback != null)
+                        Center(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: Colors.black87,
+                              borderRadius: BorderRadius.circular(25),
+                              border: Border.all(color: Colors.redAccent, width: 1),
+                            ),
+                            child: Text(
+                              _overlayFeedback!,
+                              style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+
+                      // Netflix Native Controls Overlay
                       AnimatedOpacity(
                         duration: const Duration(milliseconds: 250),
-                        opacity: _showBar ? 1.0 : 0.0,
+                        opacity: _showControls ? 1.0 : 0.0,
                         child: IgnorePointer(
-                          ignoring: !_showBar,
+                          ignoring: !_showControls,
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                             decoration: BoxDecoration(
                               gradient: LinearGradient(
-                                colors: [Colors.black.withOpacity(0.85), Colors.transparent],
+                                colors: [
+                                  Colors.black.withOpacity(0.85),
+                                  Colors.transparent,
+                                  Colors.black.withOpacity(0.85),
+                                ],
                                 begin: Alignment.topCenter,
                                 end: Alignment.bottomCenter,
+                                stops: const [0.0, 0.5, 1.0],
                               ),
                             ),
-                            child: Row(
+                            child: Column(
                               children: [
-                                InkWell(
-                                  borderRadius: BorderRadius.circular(20),
-                                  onTap: () => Navigator.pop(context),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(7),
-                                    decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.6),
-                                      shape: BoxShape.circle,
-                                    ),
-                                    child: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 18),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(
-                                    _resolvedTitle,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(color: Colors.white, fontSize: 14.5, fontWeight: FontWeight.bold),
-                                  ),
-                                ),
-                                InkWell(
-                                  borderRadius: BorderRadius.circular(20),
-                                  onTap: _showLanguagePicker,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                    decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.7),
-                                      borderRadius: BorderRadius.circular(20),
-                                      border: Border.all(color: Colors.redAccent.withOpacity(0.7), width: 1.0),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(Icons.translate_rounded, color: Colors.redAccent, size: 14),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          active['tag']!,
-                                          style: const TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.bold),
+                                // Top Header Bar
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                  child: Row(
+                                    children: [
+                                      IconButton(
+                                        icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
+                                        onPressed: () => Navigator.pop(context),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          _resolvedTitle,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
                                         ),
-                                        const SizedBox(width: 4),
-                                        const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 14),
-                                      ],
-                                    ),
+                                      ),
+                                      InkWell(
+                                        borderRadius: BorderRadius.circular(20),
+                                        onTap: _showAudioLanguagePicker,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                          decoration: BoxDecoration(
+                                            color: Colors.redAccent.withOpacity(0.25),
+                                            borderRadius: BorderRadius.circular(20),
+                                            border: Border.all(color: Colors.redAccent),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(Icons.translate_rounded, color: Colors.redAccent, size: 15),
+                                              const SizedBox(width: 6),
+                                              Text(
+                                                activeSource['tag']!,
+                                                style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                                              ),
+                                              const SizedBox(width: 4),
+                                              const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 16),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+
+                                // Center Play / Pause / Skip Controls
+                                Expanded(
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      IconButton(
+                                        iconSize: 42,
+                                        icon: const Icon(Icons.replay_10_rounded, color: Colors.white),
+                                        onPressed: () => _seekRelative(-10),
+                                      ),
+                                      const SizedBox(width: 36),
+                                      IconButton(
+                                        iconSize: 64,
+                                        icon: Icon(
+                                          (_videoController?.value.isPlaying ?? false)
+                                              ? Icons.pause_circle_filled_rounded
+                                              : Icons.play_circle_filled_rounded,
+                                          color: Colors.redAccent,
+                                        ),
+                                        onPressed: _togglePlayPause,
+                                      ),
+                                      const SizedBox(width: 36),
+                                      IconButton(
+                                        iconSize: 42,
+                                        icon: const Icon(Icons.forward_10_rounded, color: Colors.white),
+                                        onPressed: () => _seekRelative(10),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+
+                                // Bottom Scrubber Bar
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (hasValidPlayer)
+                                        SliderTheme(
+                                          data: SliderTheme.of(context).copyWith(
+                                            trackHeight: 3.5,
+                                            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                                            activeTrackColor: Colors.redAccent,
+                                            inactiveTrackColor: Colors.white24,
+                                            thumbColor: Colors.redAccent,
+                                            overlayColor: Colors.redAccent.withOpacity(0.2),
+                                          ),
+                                          child: Slider(
+                                            value: _videoController!.value.position.inMilliseconds.toDouble().clamp(
+                                                  0.0,
+                                                  _videoController!.value.duration.inMilliseconds.toDouble(),
+                                                ),
+                                            min: 0.0,
+                                            max: _videoController!.value.duration.inMilliseconds.toDouble(),
+                                            onChanged: (val) {
+                                              _videoController!.seekTo(Duration(milliseconds: val.toInt()));
+                                              _startHideControlsTimer();
+                                            },
+                                          ),
+                                        ),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Text(
+                                            hasValidPlayer
+                                                ? _formatDuration(_videoController!.value.position)
+                                                : '00:00',
+                                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                                          ),
+                                          Row(
+                                            children: [
+                                              TextButton(
+                                                onPressed: () {
+                                                  setState(() {
+                                                    _playbackSpeed = _playbackSpeed == 1.0 ? 1.25 : (_playbackSpeed == 1.25 ? 1.5 : 1.0);
+                                                    _videoController?.setPlaybackSpeed(_playbackSpeed);
+                                                  });
+                                                  _showFeedback('${_playbackSpeed}x Speed');
+                                                },
+                                                child: Text('${_playbackSpeed}x', style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
+                                              ),
+                                              IconButton(
+                                                icon: Icon(
+                                                  _currentFit == BoxFit.contain ? Icons.fullscreen_rounded : Icons.fullscreen_exit_rounded,
+                                                  color: Colors.white70,
+                                                ),
+                                                onPressed: () {
+                                                  setState(() {
+                                                    _currentFit = _currentFit == BoxFit.contain ? BoxFit.cover : BoxFit.contain;
+                                                  });
+                                                  _showFeedback(_currentFit == BoxFit.cover ? 'Zoom to Fill' : 'Fit to Screen');
+                                                },
+                                              ),
+                                            ],
+                                          ),
+                                          Text(
+                                            hasValidPlayer
+                                                ? _formatDuration(_videoController!.value.duration)
+                                                : '00:00',
+                                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ],
@@ -522,13 +756,13 @@ jobs:
                       if ('Could not load the player' in c) or ('_currentServer' in c) or ('PlayerScreen' in c) or ('WatchScreen' in c):
                           m = re.search(r'class\s+([A-Za-z0-9_]+)\s+extends\s+StatefulWidget', c)
                           class_name = m.group(1) if m else 'PlayerScreen'
-                          code = moviebox_player.replace('__CLASS_NAME__', class_name)
+                          code = netflix_player.replace('__CLASS_NAME__', class_name)
                           with open(p, 'w', encoding='utf-8') as fl:
                               fl.write(code)
 
           for loc in ['lib/screens/player/player_screen.dart', 'lib/screens/player_screen.dart']:
               os.makedirs(os.path.dirname(loc), exist_ok=True)
-              code = moviebox_player.replace('__CLASS_NAME__', 'PlayerScreen')
+              code = netflix_player.replace('__CLASS_NAME__', 'PlayerScreen')
               with open(loc, 'w', encoding='utf-8') as fl:
                   fl.write(code)
           EOF
