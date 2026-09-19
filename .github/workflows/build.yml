@@ -32,11 +32,11 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Setup Permissions & AndroidManifest
+      - name: Recreate Android Project
         run: |
-          if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
-            sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
-          fi
+          flutter create . --platforms=android --org com.jmovies.app
+          mkdir -p assets/icons assets/images
+          sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
       - name: Setup Tokens & .env File
         run: |
@@ -50,7 +50,7 @@ jobs:
           EOF
           cp .env assets/.env 2>/dev/null || true
 
-      - name: Fix CompileSDK 34 & Dependencies
+      - name: Install Dependencies & Patch SDK
         run: |
           flutter pub get
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
