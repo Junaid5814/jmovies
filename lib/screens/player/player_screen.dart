@@ -6,6 +6,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 class PlayerScreen extends StatefulWidget {
   final dynamic movie;
+  final dynamic show;
+  final dynamic episode;
   final dynamic mediaItem;
   final int? tmdbId;
   final String? title;
@@ -16,6 +18,21 @@ class PlayerScreen extends StatefulWidget {
   const PlayerScreen({
     super.key,
     this.movie,
+    this.show,
+    this.episode,
+    this.mediaItem,
+    this.tmdbId,
+    this.title,
+    this.isTv = false,
+    this.seasonNumber,
+    this.episodeNumber,
+  });
+
+  const PlayerScreen.forMovie(
+    this.movie, {
+    super.key,
+    this.show,
+    this.episode,
     this.mediaItem,
     this.tmdbId,
     this.title,
@@ -26,17 +43,16 @@ class PlayerScreen extends StatefulWidget {
 
   const PlayerScreen.forEpisode({
     super.key,
-    required int tmdbId,
-    required String title,
-    required int seasonNumber,
-    required int episodeNumber,
+    this.show,
+    this.episode,
     this.movie,
     this.mediaItem,
-  })  : tmdbId = tmdbId,
-        title = title,
-        isTv = true,
-        seasonNumber = seasonNumber,
-        episodeNumber = episodeNumber;
+    this.tmdbId,
+    this.title,
+    this.isTv = true,
+    this.seasonNumber,
+    this.episodeNumber,
+  });
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -53,11 +69,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   int get _resolvedId {
     if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
-    for (var obj in [widget.mediaItem, widget.movie]) {
+    for (var obj in [widget.movie, widget.show, widget.mediaItem]) {
       if (obj != null) {
         try {
-          final val = obj.id;
-          if (val != null && val is int && val > 0) return val;
+          final id = obj.id;
+          if (id != null) {
+            final parsed = int.tryParse(id.toString());
+            if (parsed != null && parsed > 0) return parsed;
+          }
         } catch (_) {}
       }
     }
@@ -66,7 +85,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   String get _resolvedTitle {
     if (widget.title != null && widget.title!.isNotEmpty) return widget.title!;
-    for (var obj in [widget.mediaItem, widget.movie]) {
+    for (var obj in [widget.movie, widget.show, widget.mediaItem]) {
       if (obj != null) {
         try {
           final t = obj.title ?? obj.name;
@@ -79,21 +98,44 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   bool get _resolvedIsTv {
     if (widget.isTv) return true;
+    if (widget.show != null || widget.episode != null) return true;
     if (widget.seasonNumber != null && widget.seasonNumber! > 0) return true;
-    for (var obj in [widget.mediaItem, widget.movie]) {
+    for (var obj in [widget.mediaItem, widget.movie, widget.show]) {
       if (obj != null) {
         try {
-          if (obj.mediaType == 'tv') return true;
+          if (obj.mediaType == 'tv' || obj.isTv == true) return true;
         } catch (_) {}
       }
     }
     return false;
   }
 
+  int get _resolvedSeason {
+    if (widget.seasonNumber != null && widget.seasonNumber! > 0) return widget.seasonNumber!;
+    if (widget.episode != null) {
+      try {
+        final s = widget.episode.seasonNumber ?? widget.episode.season;
+        if (s != null) return int.tryParse(s.toString()) ?? 1;
+      } catch (_) {}
+    }
+    return 1;
+  }
+
+  int get _resolvedEpisode {
+    if (widget.episodeNumber != null && widget.episodeNumber! > 0) return widget.episodeNumber!;
+    if (widget.episode != null) {
+      try {
+        final e = widget.episode.episodeNumber ?? widget.episode.episode ?? widget.episode.number;
+        if (e != null) return int.tryParse(e.toString()) ?? 1;
+      } catch (_) {}
+    }
+    return 1;
+  }
+
   List<Map<String, String>> get _servers {
     final id = _resolvedId;
-    final s = widget.seasonNumber ?? 1;
-    final e = widget.episodeNumber ?? 1;
+    final s = _resolvedSeason;
+    final e = _resolvedEpisode;
     final q = Uri.encodeComponent('$_resolvedTitle episode $e');
 
     if (_resolvedIsTv) {
@@ -267,7 +309,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
           children: [
             WebViewWidget(controller: _controller),
 
-            // Gestures: Tap center, Double tap right/left
             Positioned.fill(
               child: Row(
                 children: [
@@ -329,7 +370,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
               ),
 
-            // Top Bar
             AnimatedOpacity(
               duration: const Duration(milliseconds: 250),
               opacity: _showControls ? 1.0 : 0.0,
@@ -359,7 +399,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
             ),
 
-            // Big Easy Bottom Controls
             AnimatedOpacity(
               duration: const Duration(milliseconds: 250),
               opacity: _showControls ? 1.0 : 0.0,
