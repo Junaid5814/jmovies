@@ -11,7 +11,6 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Backup your newly committed files before unzip
       - name: Backup Native Files
         run: |
           mkdir -p /tmp/backup_screens /tmp/backup_services
@@ -29,7 +28,6 @@ jobs:
             cp -r $DIR/* .
           fi
 
-      # Restore your native files so zip doesn't overwrite them
       - name: Restore Native Files
         run: |
           mkdir -p lib/screens/player lib/data/services
@@ -61,8 +59,8 @@ jobs:
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
 
-      - name: Build APK
-        run: flutter build apk --release
+      - name: Build APK (Verbose Mode)
+        run: flutter build apk --release --verbose
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
