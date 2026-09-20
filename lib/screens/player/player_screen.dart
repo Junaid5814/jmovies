@@ -1,37 +1,28 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:video_player/video_player.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 class PlayerScreen extends StatefulWidget {
   final dynamic movie;
-  final dynamic show;
-  final dynamic episode;
   final dynamic mediaItem;
   final dynamic media;
   final dynamic item;
-
   final int? tmdbId;
   final int? id;
   final String? title;
   final String? name;
-
   final bool isTv;
   final bool? isMovie;
-
   final int? seasonNumber;
-  final int? episodeNumber;
   final int? season;
-  final int? number;
-  final String? customStreamUrl;
+  final int? episodeNumber;
+  final int? episode;
 
   const PlayerScreen({
     super.key,
     this.movie,
-    this.show,
-    this.episode,
     this.mediaItem,
     this.media,
     this.item,
@@ -42,74 +33,58 @@ class PlayerScreen extends StatefulWidget {
     this.isTv = false,
     this.isMovie,
     this.seasonNumber,
-    this.episodeNumber,
     this.season,
-    this.number,
-    this.customStreamUrl,
-  });
-
-  const PlayerScreen.forMovie(
-    this.movie, {
-    super.key,
-    this.show,
+    this.episodeNumber,
     this.episode,
-    this.mediaItem,
-    this.media,
-    this.item,
-    this.tmdbId,
-    this.id,
-    this.title,
-    this.name,
-    this.isTv = false,
-    this.isMovie = true,
-    this.seasonNumber,
-    this.episodeNumber,
-    this.season,
-    this.number,
-    this.customStreamUrl,
   });
 
   const PlayerScreen.forEpisode({
     super.key,
-    this.show,
-    this.episode,
+    required int tmdbId,
+    required String title,
+    required int seasonNumber,
+    required int episodeNumber,
     this.movie,
     this.mediaItem,
     this.media,
     this.item,
-    this.tmdbId,
     this.id,
-    this.title,
     this.name,
     this.isTv = true,
     this.isMovie = false,
-    this.seasonNumber,
-    this.episodeNumber,
     this.season,
-    this.number,
-    this.customStreamUrl,
-  });
+    this.episode,
+  })  : tmdbId = tmdbId,
+        title = title,
+        seasonNumber = seasonNumber,
+        episodeNumber = episodeNumber;
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
-  VideoPlayerController? _videoController;
-  File? _tempVideoFile;
-  HttpClient? _httpClient;
-  StreamSubscription? _downloadSub;
-  IOSink? _fileSink;
-
-  bool _isDownloading = true;
-  bool _isPlayerReady = false;
+  late final WebViewController _controller;
+  int _currentServer = 0;
   bool _showControls = true;
-  bool _isDragging = false;
-  double _downloadProgress = 0.0;
-  int _downloadedBytes = 0;
-  int _totalBytes = 0;
+  Timer? _hideTimer;
+  bool _isLoading = true;
+  String? _feedbackText;
+  Timer? _feedbackTimer;
 
-  Timer? _controlsTimer;
+  int get _resolvedId {
+    if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
+    if (widget.id != null && widget.id! > 0) return widget.id!;
+    for (var obj in [widget.mediaItem, widget.movie, widget.media, widget.item]) {
+      if (obj != null) {
+        try {
+          final val = obj.id;
+          if (val != null && val is int && val > 0) return val;
+        } catch (_) {}
+      }
+    }
+    return 0;
+  }
 
   String get _resolvedTitle {
     if (widget.title != null && widget.title!.isNotEmpty) return widget.title!;
@@ -122,217 +97,308 @@ class _PlayerScreenState extends State<PlayerScreen> {
         } catch (_) {}
       }
     }
-    return 'Now Playing';
+    return 'Streaming';
   }
 
-  String get _resolvedStreamUrl {
-    if (widget.customStreamUrl != null && widget.customStreamUrl!.isNotEmpty) {
-      return widget.customStreamUrl!;
+  bool get _resolvedIsTv {
+    if (widget.isTv) return true;
+    if (widget.seasonNumber != null && widget.seasonNumber! > 0) return true;
+    if (widget.season != null && widget.season! > 0) return true;
+    for (var obj in [widget.mediaItem, widget.movie, widget.media, widget.item]) {
+      if (obj != null) {
+        try {
+          if (obj.mediaType == 'tv') return true;
+        } catch (_) {}
+      }
     }
-    return 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
+    return false;
+  }
+
+  List<Map<String, String>> get _servers {
+    final id = _resolvedId;
+    final s = widget.seasonNumber ?? widget.season ?? 1;
+    final e = widget.episodeNumber ?? widget.episode ?? 1;
+    final qTitle = Uri.encodeComponent('$_resolvedTitle episode $e');
+
+    if (_resolvedIsTv) {
+      return [
+        {'name': 'Server 1 (VidLink AutoPlay HD)', 'url': 'https://vidlink.pro/tv/$id/$s/$e?autoplay=true'},
+        {'name': 'Server 2 (MultiEmbed - Hindi Dubbed / Multi)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e&autoplay=1'},
+        {'name': 'Server 3 (AutoEmbed Anime & Global)', 'url': 'https://player.autoembed.cc/embed/tv/$id/$s/$e'},
+        {'name': 'Server 4 (Pakistani Dramas / YouTube)', 'url': 'https://www.youtube.com/embed?listType=search&list=$qTitle&autoplay=1'},
+      ];
+    } else {
+      return [
+        {'name': 'Server 1 (VidLink AutoPlay HD)', 'url': 'https://vidlink.pro/movie/$id?autoplay=true'},
+        {'name': 'Server 2 (MultiEmbed - Hindi Dubbed / Multi)', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&autoplay=1'},
+        {'name': 'Server 3 (AutoEmbed Fast Backup)', 'url': 'https://player.autoembed.cc/embed/movie/$id'},
+        {'name': 'Server 4 (VidSrc Ultra)', 'url': 'https://vidsrc.cc/v2/embed/movie/$id'},
+      ];
+    }
   }
 
   @override
   void initState() {
     super.initState();
-    _lockLandscape();
-    _startCacheAndPlayback();
-    _resetControlsTimer();
-  }
-
-  Future<void> _lockLandscape() async {
-    await WakelockPlus.enable();
-    await SystemChrome.setPreferredOrientations([
+    SystemChrome.setPreferredOrientations([
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
     ]);
-    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    WakelockPlus.enable();
+
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setUserAgent('Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36')
+      ..setBackgroundColor(Colors.black)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageStarted: (_) {
+            if (mounted) setState(() => _isLoading = true);
+          },
+          onPageFinished: (_) {
+            if (mounted) setState(() => _isLoading = false);
+            _injectAutoPlayAndClean();
+          },
+          onNavigationRequest: (req) {
+            final url = req.url.toLowerCase();
+            if (url.startsWith('blob:') ||
+                url.startsWith('about:') ||
+                url.contains('vidlink') ||
+                url.contains('multiembed') ||
+                url.contains('autoembed') ||
+                url.contains('youtube') ||
+                url.contains('vidsrc') ||
+                url.contains('m3u8') ||
+                url.contains('mp4')) {
+              return NavigationDecision.navigate;
+            }
+            return NavigationDecision.prevent;
+          },
+        ),
+      )
+      ..loadRequest(Uri.parse(_servers[_currentServer]['url']!));
+
+    _startHideTimer();
   }
 
-  Future<void> _startCacheAndPlayback() async {
-    try {
-      final tempDir = Directory.systemTemp;
-      final uniqueName = 'jmovies_cache_${DateTime.now().millisecondsSinceEpoch}.mp4';
-      _tempVideoFile = File('${tempDir.path}/$uniqueName');
-      _fileSink = _tempVideoFile!.openWrite();
-
-      _httpClient = HttpClient();
-      final request = await _httpClient!.getUrl(Uri.parse(_resolvedStreamUrl));
-      final response = await request.close();
-
-      _totalBytes = response.contentLength;
-      bool playerTriggered = false;
-
-      _downloadSub = response.listen(
-        (chunk) async {
-          _fileSink?.add(chunk);
-          _downloadedBytes += chunk.length;
-
-          if (_totalBytes > 0 && mounted) {
-            setState(() {
-              _downloadProgress = (_downloadedBytes / _totalBytes).clamp(0.0, 1.0);
-            });
+  void _injectAutoPlayAndClean() {
+    const js = """
+      (function() {
+        window.open = function() { return null; };
+        setInterval(function() {
+          const btn = document.querySelector('.play-btn, .vjs-big-play-button, button[aria-label="Play"], #play, .jw-display-icon-display, svg[data-icon="play"]');
+          if (btn) btn.click();
+          const v = document.querySelector('video');
+          if (v && v.paused) {
+            v.muted = false;
+            v.play().catch(function(){});
           }
-
-          // Buffer check: 3MB aate hi local play start!
-          if (!playerTriggered && _downloadedBytes >= (3 * 1024 * 1024)) {
-            playerTriggered = true;
-            await _fileSink?.flush();
-            _initPlayerFromFile();
-          }
-        },
-        onDone: () async {
-          await _fileSink?.flush();
-          await _fileSink?.close();
-          _fileSink = null;
-
-          if (mounted) setState(() => _isDownloading = false);
-          if (!playerTriggered) {
-            _initPlayerFromFile();
-          }
-        },
-        onError: (err) {
-          debugPrint('Stream cache error: $err');
-        },
-        cancelOnError: true,
-      );
-    } catch (e) {
-      debugPrint('Cache initialization failed: $e');
-    }
+        }, 350);
+      })();
+    """;
+    _controller.runJavaScript(js).catchError((_) {});
   }
 
-  Future<void> _initPlayerFromFile() async {
-    if (_tempVideoFile == null || !await _tempVideoFile!.exists()) return;
-
-    _videoController = VideoPlayerController.file(_tempVideoFile!)
-      ..initialize().then((_) {
-        if (mounted) {
-          setState(() {
-            _isPlayerReady = true;
-          });
-          _videoController!.play();
-          _videoController!.addListener(() {
-            if (mounted && !_isDragging) setState(() {});
-          });
-        }
-      });
+  void _seekBy(int seconds) {
+    final js = "var v = document.querySelector('video'); if(v) { v.currentTime += $seconds; }";
+    _controller.runJavaScript(js).catchError((_) {});
+    _triggerFeedback(seconds > 0 ? '+$seconds Sec ⏩' : '$seconds Sec ⏪');
   }
 
-  void _resetControlsTimer() {
-    _controlsTimer?.cancel();
-    _controlsTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted && (_videoController?.value.isPlaying ?? false)) {
-        setState(() => _showControls = false);
-      }
+  void _togglePlayPause() {
+    const js = "var v = document.querySelector('video'); if(v) { if(v.paused) { v.play(); } else { v.pause(); } }";
+    _controller.runJavaScript(js).catchError((_) {});
+    _triggerFeedback('Play / Pause ⏯️');
+  }
+
+  void _unmuteAudio() {
+    const js = "var v = document.querySelector('video'); if(v) { v.muted = false; v.volume = 1.0; }";
+    _controller.runJavaScript(js).catchError((_) {});
+    _triggerFeedback('Audio Unmuted 🔊');
+  }
+
+  void _triggerFeedback(String text) {
+    setState(() => _feedbackText = text);
+    _feedbackTimer?.cancel();
+    _feedbackTimer = Timer(const Duration(milliseconds: 1000), () {
+      if (mounted) setState(() => _feedbackText = null);
+    });
+  }
+
+  void _startHideTimer() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted) setState(() => _showControls = false);
     });
   }
 
   void _toggleControls() {
     setState(() => _showControls = !_showControls);
-    if (_showControls) _resetControlsTimer();
+    if (_showControls) _startHideTimer();
   }
 
-  void _seekRelative(int seconds) {
-    if (_videoController == null || !_videoController!.value.isInitialized) return;
-    final current = _videoController!.value.position;
-    final target = current + Duration(seconds: seconds);
-    _videoController!.seekTo(target < Duration.zero ? Duration.zero : target);
-    _resetControlsTimer();
-  }
-
-  String _formatDuration(Duration d) {
-    final m = d.inMinutes.remainder(60);
-    final s = d.inSeconds.remainder(60);
-    final h = d.inHours;
-    if (h > 0) {
-      return '$h:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
-    }
-    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  void _showServerSheet() {
+    _hideTimer?.cancel();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF141414),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Select Stream Server & Audio', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                    IconButton(icon: const Icon(Icons.close, color: Colors.white54, size: 20), onPressed: () => Navigator.pop(ctx)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                ...List.generate(_servers.length, (idx) {
+                  final isSel = idx == _currentServer;
+                  return Container(
+                    margin: const EdgeInsets.symmetric(vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isSel ? Colors.redAccent.withOpacity(0.18) : Colors.white.withOpacity(0.04),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: isSel ? Colors.redAccent : Colors.transparent),
+                    ),
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(
+                        idx == 1 ? Icons.translate_rounded : (idx == 3 ? Icons.live_tv_rounded : Icons.dns_rounded),
+                        color: isSel ? Colors.redAccent : Colors.white70,
+                        size: 20,
+                      ),
+                      title: Text(
+                        _servers[idx]['name']!,
+                        style: TextStyle(
+                          color: isSel ? Colors.redAccent : Colors.white,
+                          fontSize: 13.5,
+                          fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                        ),
+                      ),
+                      trailing: isSel ? const Icon(Icons.check_circle, color: Colors.redAccent, size: 18) : null,
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        setState(() {
+                          _currentServer = idx;
+                          _isLoading = true;
+                        });
+                        _controller.loadRequest(Uri.parse(_servers[idx]['url']!));
+                        _startHideTimer();
+                      },
+                    ),
+                  );
+                }),
+                const SizedBox(height: 12),
+              ],
+            ),
+          ),
+        );
+      },
+    ).then((_) => _startHideTimer());
   }
 
   @override
   void dispose() {
-    _downloadSub?.cancel();
-    _httpClient?.close();
-
-    try {
-      _fileSink?.close();
-    } catch (_) {}
-
-    _controlsTimer?.cancel();
-    _videoController?.dispose();
-
-    // AUTO-DELETE: Exit hote hi file phone se permanently delete!
-    if (_tempVideoFile != null && _tempVideoFile!.existsSync()) {
-      try {
-        _tempVideoFile!.deleteSync();
-        debugPrint('Cache file deleted successfully on exit.');
-      } catch (e) {
-        debugPrint('Failed to delete temp video: $e');
-      }
-    }
-
-    WakelockPlus.disable();
+    _hideTimer?.cancel();
+    _feedbackTimer?.cancel();
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    WakelockPlus.disable();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final seasonNum = widget.seasonNumber ?? widget.season;
-    final epNum = widget.episodeNumber ?? widget.episode ?? widget.number;
-    final headerInfo = widget.isTv && seasonNum != null && epNum != null
-        ? '$_resolvedTitle • S${seasonNum}E$epNum'
-        : _resolvedTitle;
-
     return Scaffold(
       backgroundColor: Colors.black,
-      body: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onTap: _toggleControls,
+      body: SafeArea(
         child: Stack(
-          fit: StackFit.expand,
           children: [
-            // 1. Hardware Native Video Player
-            if (_isPlayerReady && _videoController != null)
-              Center(
-                child: AspectRatio(
-                  aspectRatio: _videoController!.value.aspectRatio,
-                  child: VideoPlayer(_videoController!),
-                ),
-              )
-            else
-              Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const CircularProgressIndicator(color: Colors.redAccent, strokeWidth: 3),
-                    const SizedBox(height: 18),
-                    Text(
-                      'Buffering into cache (${(_downloadProgress * 100).toInt()}%)...',
-                      style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+            WebViewWidget(controller: _controller),
+
+            Positioned.fill(
+              child: Row(
+                children: [
+                  Expanded(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onDoubleTap: () => _seekBy(-10),
+                      onTap: _toggleControls,
                     ),
-                    const SizedBox(height: 6),
-                    const Text(
-                      'Ready to stream smoothly without buffering',
-                      style: TextStyle(color: Colors.white38, fontSize: 11),
+                  ),
+                  Expanded(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onDoubleTap: _togglePlayPause,
+                      onTap: _toggleControls,
                     ),
-                  ],
+                  ),
+                  Expanded(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onDoubleTap: () => _seekBy(10),
+                      onTap: _toggleControls,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            if (_feedbackText != null)
+              Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(25),
+                    border: Border.all(color: Colors.redAccent, width: 1),
+                  ),
+                  child: Text(
+                    _feedbackText!,
+                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
                 ),
               ),
 
-            // 2. Top Bar
+            if (_isLoading)
+              Container(
+                color: Colors.black,
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(color: Colors.redAccent),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Connecting to ${_servers[_currentServer]['name']}...',
+                        style: const TextStyle(color: Colors.white70, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
             AnimatedOpacity(
-              duration: const Duration(milliseconds: 250),
+              duration: const Duration(milliseconds: 300),
               opacity: _showControls ? 1.0 : 0.0,
               child: IgnorePointer(
                 ignoring: !_showControls,
                 child: Container(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-                  decoration: const BoxDecoration(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
                     gradient: LinearGradient(
-                      colors: [Colors.black87, Colors.transparent],
+                      colors: [Colors.black.withOpacity(0.9), Colors.transparent],
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
                     ),
@@ -354,143 +420,86 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       const SizedBox(width: 14),
                       Expanded(
                         child: Text(
-                          headerInfo,
+                          _resolvedTitle,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                          style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
                         ),
                       ),
-                      if (_isDownloading)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(20),
+                        onTap: _showServerSheet,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                           decoration: BoxDecoration(
                             color: Colors.redAccent.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: Colors.redAccent.withOpacity(0.6)),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: Colors.redAccent, width: 0.8),
                           ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const SizedBox(
-                                width: 10,
-                                height: 10,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.redAccent),
-                              ),
+                              const Icon(Icons.tune_rounded, color: Colors.redAccent, size: 14),
                               const SizedBox(width: 6),
-                              Text(
-                                '${(_downloadProgress * 100).toInt()}% Cached',
-                                style: const TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold),
-                              ),
+                              Text('Server ${_currentServer + 1}', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                              const SizedBox(width: 4),
+                              const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 14),
                             ],
                           ),
                         ),
+                      ),
                     ],
                   ),
                 ),
               ),
             ),
 
-            // 3. Center Controls (10s back, Play/Pause, 10s forward)
-            if (_showControls && _isPlayerReady && _videoController != null)
-              Center(
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      iconSize: 42,
-                      icon: const Icon(Icons.replay_10_rounded, color: Colors.white),
-                      onPressed: () => _seekRelative(-10),
+            AnimatedOpacity(
+              duration: const Duration(milliseconds: 300),
+              opacity: _showControls ? 1.0 : 0.0,
+              child: IgnorePointer(
+                ignoring: !_showControls,
+                child: Align(
+                  alignment: Alignment.bottomCenter,
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.black87,
+                      borderRadius: BorderRadius.circular(30),
+                      border: Border.all(color: Colors.white24, width: 0.8),
                     ),
-                    const SizedBox(width: 40),
-                    IconButton(
-                      iconSize: 68,
-                      icon: Icon(
-                        _videoController!.value.isPlaying ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded,
-                        color: Colors.redAccent,
-                      ),
-                      onPressed: () {
-                        setState(() {
-                          _videoController!.value.isPlaying ? _videoController!.pause() : _videoController!.play();
-                        });
-                        _resetControlsTimer();
-                      },
-                    ),
-                    const SizedBox(width: 40),
-                    IconButton(
-                      iconSize: 42,
-                      icon: const Icon(Icons.forward_10_rounded, color: Colors.white),
-                      onPressed: () => _seekRelative(10),
-                    ),
-                  ],
-                ),
-              ),
-
-            // 4. Bottom Scrubber
-            if (_isPlayerReady && _videoController != null)
-              AnimatedOpacity(
-                duration: const Duration(milliseconds: 250),
-                opacity: _showControls ? 1.0 : 0.0,
-                child: IgnorePointer(
-                  ignoring: !_showControls,
-                  child: Align(
-                    alignment: Alignment.bottomCenter,
-                    child: Container(
-                      padding: const EdgeInsets.fromLTRB(18, 28, 18, 14),
-                      decoration: const BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [Colors.transparent, Colors.black87],
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.replay_10_rounded, color: Colors.white, size: 28),
+                          onPressed: () => _seekBy(-10),
                         ),
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              trackHeight: 3.5,
-                              activeTrackColor: Colors.redAccent,
-                              inactiveTrackColor: Colors.white24,
-                              thumbColor: Colors.redAccent,
-                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                            ),
-                            child: Slider(
-                              value: _videoController!.value.duration.inMilliseconds > 0
-                                  ? (_videoController!.value.position.inMilliseconds / _videoController!.value.duration.inMilliseconds).clamp(0.0, 1.0)
-                                  : 0.0,
-                              onChangeStart: (_) => _isDragging = true,
-                              onChangeEnd: (val) {
-                                _isDragging = false;
-                                final ms = (_videoController!.value.duration.inMilliseconds * val).toInt();
-                                _videoController!.seekTo(Duration(milliseconds: ms));
-                              },
-                              onChanged: (val) {
-                                setState(() {});
-                              },
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 14),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(
-                                  _formatDuration(_videoController!.value.position),
-                                  style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-                                ),
-                                Text(
-                                  _formatDuration(_videoController!.value.duration),
-                                  style: const TextStyle(color: Colors.white54, fontSize: 12),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.play_circle_filled_rounded, color: Colors.redAccent, size: 38),
+                          onPressed: _togglePlayPause,
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.forward_10_rounded, color: Colors.white, size: 28),
+                          onPressed: () => _seekBy(10),
+                        ),
+                        const SizedBox(width: 12),
+                        Container(height: 24, width: 1, color: Colors.white24),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.volume_up_rounded, color: Colors.white, size: 26),
+                          onPressed: _unmuteAudio,
+                          tooltip: 'Unmute',
+                        ),
+                      ],
                     ),
                   ),
                 ),
               ),
+            ),
           ],
         ),
       ),
