@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -6,18 +7,30 @@ import 'core/theme/app_theme.dart';
 import 'screens/splash/splash_screen.dart';
 
 Future<void> main() async {
+  // Catch any early framework errors
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Loads TMDB_ACCESS_TOKEN (and optionally STREAM_BACKEND_URL) from a
-  // local .env file that is NOT committed to source control.
-  await dotenv.load(fileName: '.env');
+  // Safe dotenv loader - App crash hone se bachata hai
+  try {
+    await dotenv.load(fileName: '.env');
+  } catch (e) {
+    debugPrint('dotenv loading error (continuing with defaults): $e');
+  }
 
-  await SystemChrome.setPreferredOrientations([
-    DeviceOrientation.portraitUp,
-    DeviceOrientation.portraitDown,
-  ]);
+  // Orientation settings
+  try {
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+  } catch (_) {}
 
-  runApp(const ProviderScope(child: JmoviesApp()));
+  // Har haal mein runApp run hona chahiye
+  runApp(
+    const ProviderScope(
+      child: JmoviesApp(),
+    ),
+  );
 }
 
 class JmoviesApp extends StatelessWidget {
