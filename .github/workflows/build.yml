@@ -57,7 +57,7 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: Configure Android SDK 36 (Kotlin & Groovy DSL)
+      - name: Configure Android SDK 36
         run: |
           python3 - << 'EOF'
           import os, re
@@ -104,7 +104,7 @@ jobs:
       - name: Build and Sign Valid APK
         run: |
           cd android
-          ./gradlew assembleRelease -x checkReleaseAarMetadata
+          ./gradlew :app:assembleRelease
           cd ..
 
           APK_FILE=$(find android/app/build/outputs/apk/release build -name "*.apk" 2>/dev/null | head -n 1)
