@@ -11,6 +11,19 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Extract ZIP
+        run: |
+          LATEST_ZIP=$(ls -t *.zip 2>/dev/null | head -n 1)
+          if [ -n "$LATEST_ZIP" ]; then
+            unzip -o "$LATEST_ZIP"
+          fi
+          if [ ! -f "pubspec.yaml" ]; then
+            DIR=$(find . -maxdepth 3 -name "pubspec.yaml" -exec dirname {} \; | head -n 1)
+            if [ -n "$DIR" ]; then
+              cp -r $DIR/* .
+            fi
+          fi
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -29,10 +42,25 @@ jobs:
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
-      - name: Install Dependencies
-        run: flutter pub get
+      - name: Pin Safe Plugin Versions
+        run: |
+          python3 - << 'EOF'
+          with open('pubspec.yaml', 'r') as f:
+              c = f.read()
+          if 'dependency_overrides:' in c:
+              c = c.replace('dependency_overrides:', 'dependency_overrides:\n  sqflite_android: "<2.4.0"')
+          else:
+              c += '\ndependency_overrides:\n  sqflite_android: "<2.4.0"\n'
+          with open('pubspec.yaml', 'w') as f:
+              f.write(c)
+          EOF
 
-      - name: Setup Tokens & .env
+      - name: Add Dependencies
+        run: |
+          flutter pub add carousel_slider:^5.0.0 webview_flutter wakelock_plus
+          flutter pub get
+
+      - name: Setup Tokens & .env File
         run: |
           KEY="dac07662083decf2616c4e68d22342c9"
           TOKEN="eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4"
@@ -48,70 +76,48 @@ jobs:
         run: |
           python3 - << 'EOF'
           import os, re
-          b = "Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: const [Text('Jmovies', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)), Text('POWERED BY JUNAID JAVED', style: TextStyle(color: Colors.redAccent, fontSize: 8.5, fontWeight: FontWeight.bold))])"
+          branding = """Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: const [
+              Text('Jmovies', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+              Text('POWERED BY JUNAID JAVED', style: TextStyle(color: Colors.redAccent, fontSize: 8.5, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
+            ],
+          )"""
           for r, _, fs in os.walk('lib'):
             for f in fs:
               if f.endswith('.dart'):
                 p = os.path.join(r, f)
-                c = open(p, encoding='utf-8', errors='ignore').read()
-                m = re.search(r'(const\s+)?Text\s*\(\s*[\'"]J[mM]ovies[\'"]', c)
-                if m and 'JUNAID JAVED' not in c:
-                  s = m.start()
-                  fp = c.find('(', s)
-                  if fp != -1:
-                    cnt, e = 0, -1
-                    for i in range(fp, len(c)):
-                      if c[i] == '(': cnt += 1
-                      elif c[i] == ')':
-                        cnt -= 1
-                        if cnt == 0: e = i + 1; break
-                    if e != -1: open(p, 'w', encoding='utf-8').write(c[:s] + b + c[e:])
+                with open(p, 'r', encoding='utf-8', errors='ignore') as fl: t = fl.read()
+                m = re.search(r'(const\s+)?Text\s*\(\s*[\'"]J[mM]ovies[\'"]', t)
+                if m and 'JUNAID JAVED' not in t:
+                  start = m.start()
+                  first_paren = t.find('(', start)
+                  if first_paren != -1:
+                    count, end = 0, -1
+                    for i in range(first_paren, len(t)):
+                      if t[i] == '(': count += 1
+                      elif t[i] == ')':
+                        count -= 1
+                        if count == 0: end = i + 1; break
+                    if end != -1:
+                      t = t[:start] + branding + t[end:]
+                      with open(p, 'w', encoding='utf-8') as fl: fl.write(t)
           EOF
 
-      - name: Patch Plugins (SDK 35 & Java Safeguards)
+      - name: Patch Plugins (SDK 34 & Proguard)
         run: |
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 35/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 35/g' {} + 2>/dev/null || true
-          find . -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 35/g' {} + 2>/dev/null || true
-          find . -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 35/g' {} + 2>/dev/null || true
-          find . -name "build.gradle.kts" -exec sed -i -E 's/compileSdk = [0-9]+/compileSdk = 35/g' {} + 2>/dev/null || true
-          find . -name "build.gradle.kts" -exec sed -i -E 's/compileSdk = flutter\.compileSdkVersion/compileSdk = 35/g' {} + 2>/dev/null || true
-          find . -name "build.gradle" -exec sed -i -E 's/compileSdkVersion flutter\.compileSdkVersion/compileSdkVersion 35/g' {} + 2>/dev/null || true
-
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
           find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
+          echo 'subprojects { afterEvaluate { project -> if (project.hasProperty("android")) { project.android { compileSdkVersion 34 } } } }' >> android/build.gradle
 
-          echo 'subprojects { afterEvaluate { project -> if (project.hasProperty("android")) { project.android { compileSdkVersion 35 } } } }' >> android/build.gradle
-
-          find $HOME/.pub-cache -name "Utils.java" -exec sed -i 's/Build.VERSION_CODES.BAKLAVA/36/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "Utils.java" -exec sed -i 's/Locale\.of(\([^)]*\))/new Locale(\1)/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "Utils.java" -exec sed -i 's/thread\.threadId()/thread.getId()/g' {} + 2>/dev/null || true
-
-      - name: Build & Catch APK
-        run: |
-          flutter build apk --release || true
-
-          # Create default output folder
-          mkdir -p build/app/outputs/flutter-apk
-
-          # Hunt and collect the built release APK from all folders
-          APK_FOUND=$(find . -type f -name "*release*.apk" ! -name "*unaligned*" 2>/dev/null | head -n 1)
-
-          if [ -z "$APK_FOUND" ]; then
-            APK_FOUND=$(find . -type f -name "*.apk" ! -name "*unaligned*" 2>/dev/null | head -n 1)
-          fi
-
-          if [ -n "$APK_FOUND" ]; then
-            echo "Found compiled APK at: $APK_FOUND"
-            cp "$APK_FOUND" build/app/outputs/flutter-apk/app-release.apk
-            ls -lh build/app/outputs/flutter-apk/app-release.apk
-          else
-            echo "No APK was generated by Gradle!"
-            exit 1
-          fi
+      - name: Build APK
+        run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: jmovies-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/*.apk
