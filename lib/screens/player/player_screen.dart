@@ -6,6 +6,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 class PlayerScreen extends StatefulWidget {
   final dynamic movie;
+  final dynamic show;
+  final dynamic episode;
   final dynamic mediaItem;
   final dynamic media;
   final dynamic item;
@@ -18,11 +20,12 @@ class PlayerScreen extends StatefulWidget {
   final int? seasonNumber;
   final int? season;
   final int? episodeNumber;
-  final int? episode;
 
   const PlayerScreen({
     super.key,
     this.movie,
+    this.show,
+    this.episode,
     this.mediaItem,
     this.media,
     this.item,
@@ -35,29 +38,45 @@ class PlayerScreen extends StatefulWidget {
     this.seasonNumber,
     this.season,
     this.episodeNumber,
-    this.episode,
   });
+
+  const PlayerScreen.forMovie(
+    dynamic movieItem, {
+    super.key,
+  })  : movie = movieItem,
+        show = null,
+        episode = null,
+        mediaItem = null,
+        media = null,
+        item = null,
+        tmdbId = null,
+        id = null,
+        title = null,
+        name = null,
+        isTv = false,
+        isMovie = true,
+        seasonNumber = null,
+        season = null,
+        episodeNumber = null;
 
   const PlayerScreen.forEpisode({
     super.key,
-    required int tmdbId,
-    required String title,
-    required int seasonNumber,
-    required int episodeNumber,
+    this.show,
+    this.episode,
     this.movie,
     this.mediaItem,
     this.media,
     this.item,
+    this.tmdbId,
     this.id,
+    this.title,
     this.name,
     this.isTv = true,
     this.isMovie = false,
+    this.seasonNumber,
     this.season,
-    this.episode,
-  })  : tmdbId = tmdbId,
-        title = title,
-        seasonNumber = seasonNumber,
-        episodeNumber = episodeNumber;
+    this.episodeNumber,
+  });
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -75,11 +94,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   int get _resolvedId {
     if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
     if (widget.id != null && widget.id! > 0) return widget.id!;
-    for (var obj in [widget.mediaItem, widget.movie, widget.media, widget.item]) {
+    for (var obj in [widget.show, widget.movie, widget.mediaItem, widget.media, widget.item]) {
       if (obj != null) {
         try {
           final val = obj.id;
           if (val != null && val is int && val > 0) return val;
+          final tmdb = obj.tmdbId;
+          if (tmdb != null && tmdb is int && tmdb > 0) return tmdb;
         } catch (_) {}
       }
     }
@@ -89,7 +110,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   String get _resolvedTitle {
     if (widget.title != null && widget.title!.isNotEmpty) return widget.title!;
     if (widget.name != null && widget.name!.isNotEmpty) return widget.name!;
-    for (var obj in [widget.mediaItem, widget.movie, widget.media, widget.item]) {
+    for (var obj in [widget.show, widget.movie, widget.mediaItem, widget.media, widget.item]) {
       if (obj != null) {
         try {
           final t = obj.title ?? obj.name;
@@ -100,10 +121,36 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return 'Streaming';
   }
 
+  int get _resolvedSeason {
+    if (widget.seasonNumber != null && widget.seasonNumber! > 0) return widget.seasonNumber!;
+    if (widget.season != null && widget.season! > 0) return widget.season!;
+    if (widget.episode != null) {
+      try {
+        final s = widget.episode.seasonNumber ?? widget.episode.season;
+        if (s != null && s is int && s > 0) return s;
+      } catch (_) {}
+    }
+    return 1;
+  }
+
+  int get _resolvedEpisode {
+    if (widget.episodeNumber != null && widget.episodeNumber! > 0) return widget.episodeNumber!;
+    if (widget.episode != null) {
+      if (widget.episode is int && (widget.episode as int) > 0) return widget.episode as int;
+      try {
+        final e = widget.episode.episodeNumber ?? widget.episode.episode ?? widget.episode.number;
+        if (e != null && e is int && e > 0) return e;
+      } catch (_) {}
+    }
+    return 1;
+  }
+
   bool get _resolvedIsTv {
+    if (widget.show != null) return true;
     if (widget.isTv) return true;
     if (widget.seasonNumber != null && widget.seasonNumber! > 0) return true;
     if (widget.season != null && widget.season! > 0) return true;
+    if (widget.episode != null) return true;
     for (var obj in [widget.mediaItem, widget.movie, widget.media, widget.item]) {
       if (obj != null) {
         try {
@@ -116,8 +163,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   List<Map<String, String>> get _servers {
     final id = _resolvedId;
-    final s = widget.seasonNumber ?? widget.season ?? 1;
-    final e = widget.episodeNumber ?? widget.episode ?? 1;
+    final s = _resolvedSeason;
+    final e = _resolvedEpisode;
     final qTitle = Uri.encodeComponent('$_resolvedTitle episode $e');
 
     if (_resolvedIsTv) {
