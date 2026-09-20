@@ -51,31 +51,35 @@ jobs:
           flutter create . --platforms=android --org com.jmovies.app
           mkdir -p assets/icons assets/images
           
-          # Permissions in Manifest
+          # Permissions
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
           
-          # Safe patch for both .gradle and .gradle.kts (Sets minSdk 21 & compileSdk 34)
-          find android -name "build.gradle.kts" -exec sed -i -E 's/minSdk = .*/minSdk = 21/g' {} + 2>/dev/null || true
-          find android -name "build.gradle.kts" -exec sed -i -E 's/compileSdk = .*/compileSdk = 34/g' {} + 2>/dev/null || true
-          find android -name "build.gradle" -exec sed -i -E 's/minSdkVersion .*/minSdkVersion 21/g' {} + 2>/dev/null || true
-          find android -name "build.gradle" -exec sed -i -E 's/minSdk = .*/minSdk = 21/g' {} + 2>/dev/null || true
-          find android -name "build.gradle" -exec sed -i -E 's/compileSdkVersion .*/compileSdkVersion 34/g' {} + 2>/dev/null || true
-          find android -name "build.gradle" -exec sed -i -E 's/compileSdk = .*/compileSdk = 34/g' {} + 2>/dev/null || true
+          # Force minSdk 21 & compileSdk 34 in all build.gradle files
+          find android -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/minSdk = .*/minSdk = 21/g' {} + 2>/dev/null || true
+          find android -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/minSdkVersion .*/minSdkVersion 21/g' {} + 2>/dev/null || true
+          find android -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/compileSdk = .*/compileSdk = 34/g' {} + 2>/dev/null || true
+          find android -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/compileSdkVersion .*/compileSdkVersion 34/g' {} + 2>/dev/null || true
 
-          # Gradle performance & Jetifier settings
+          # Properties
           echo "android.useAndroidX=true" >> android/gradle.properties
           echo "android.enableJetifier=true" >> android/gradle.properties
           echo "org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=512m" >> android/gradle.properties
 
-      - name: Install Dependencies
+      - name: Install Dependencies & Patch Proguard
         run: |
           flutter pub add video_player wakelock_plus http 2>/dev/null || true
           flutter pub get
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
+          
+          # Fix proguard-android.txt in inappwebview and all dependencies
+          find $HOME/.pub-cache -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i 's/proguard-android\.txt/proguard-android-optimize\.txt/g' {} + 2>/dev/null || true
+          find android -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i 's/proguard-android\.txt/proguard-android-optimize\.txt/g' {} + 2>/dev/null || true
+          
+          # Fix compileSdk across all plugins
+          find $HOME/.pub-cache -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
 
       - name: Build APK
-        run: flutter build apk --release
+        run: flutter build apk --release --no-pub
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
