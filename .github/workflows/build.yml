@@ -29,11 +29,8 @@ jobs:
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
-      - name: Pin Safe Plugins & Dependencies
-        run: |
-          python3 -c "c=open('pubspec.yaml').read(); open('pubspec.yaml','w').write(c.replace('dependency_overrides:','dependency_overrides:\n  sqflite_android: 2.3.3') if 'dependency_overrides:' in c else c+'\ndependency_overrides:\n  sqflite_android: 2.3.3\n')"
-          flutter pub add carousel_slider:^5.0.0 video_player wakelock_plus
-          flutter pub get
+      - name: Install Dependencies
+        run: flutter pub get
 
       - name: Setup Tokens & .env
         run: |
@@ -71,13 +68,18 @@ jobs:
                     if e != -1: open(p, 'w', encoding='utf-8').write(c[:s] + b + c[e:])
           EOF
 
-      - name: Patch Plugins (SDK 34 & Proguard)
+      - name: Patch Plugins (SDK 34 & Sqflite Baklava Fix)
         run: |
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
           find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
           echo 'subprojects { afterEvaluate { project -> if (project.hasProperty("android")) { project.android { compileSdkVersion 34 } } } }' >> android/build.gradle
+
+          # Fix sqflite_android 2.4.4 Java compilation incompatibility
+          find $HOME/.pub-cache -name "Utils.java" -exec sed -i 's/Build.VERSION_CODES.BAKLAVA/36/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "Utils.java" -exec sed -i 's/Locale\.of(\([^)]*\))/new Locale(\1)/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "Utils.java" -exec sed -i 's/thread\.threadId()/thread.getId()/g' {} + 2>/dev/null || true
 
       - name: Build APK
         run: flutter build apk --release
