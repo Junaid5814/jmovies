@@ -11,6 +11,15 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Extract ZIP
+        run: |
+          LATEST_ZIP=$(ls -t *.zip 2>/dev/null | head -n 1)
+          unzip -o "$LATEST_ZIP"
+          if [ ! -f "pubspec.yaml" ]; then
+            DIR=$(find . -maxdepth 3 -name "pubspec.yaml" -exec dirname {} \; | head -n 1)
+            cp -r $DIR/* .
+          fi
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -22,134 +31,287 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Recreate Clean Android Project
+      - name: Recreate Android Project
         run: |
           rm -rf android
           flutter create . --platforms=android --org com.jmovies.app
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
-      - name: Ensure Dependencies
+      - name: Pin Safe Plugins & Dependencies
         run: |
-          flutter pub add flutter_inappwebview wakelock_plus carousel_slider:^5.0.0 flutter_dotenv
+          python3 -c "c=open('pubspec.yaml').read(); open('pubspec.yaml','w').write(c.replace('dependency_overrides:','dependency_overrides:\n  sqflite_android: 2.3.3') if 'dependency_overrides:' in c else c+'\ndependency_overrides:\n  sqflite_android: 2.3.3\n')"
+          flutter pub add carousel_slider:^5.0.0 video_player wakelock_plus
           flutter pub get
 
-      - name: Setup Environment Tokens
+      - name: Setup Tokens & .env
         run: |
           KEY="dac07662083decf2616c4e68d22342c9"
           TOKEN="eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4"
           cat << EOF > .env
           TMDB_ACCESS_TOKEN=$TOKEN
-          TMDB_READ_TOKEN=$TOKEN
-          TMDB_TOKEN=$TOKEN
-          ACCESS_TOKEN=$TOKEN
-          TOKEN=$TOKEN
           TMDB_API_KEY=$KEY
-          API_KEY=$KEY
-          TMDB_KEY=$KEY
           BASE_URL=https://api.themoviedb.org/3
           IMAGE_BASE_URL=https://image.tmdb.org/t/p/w500
-          WEBVIEW_PLAYER_BASE_URL=https://multiembed.mov/?video_id=
           EOF
           cp .env assets/.env 2>/dev/null || true
 
-      - name: Patch Android SDK 35 & Fix Java Deprecations
+      - name: Inject Branding Safely
         run: |
           python3 - << 'EOF'
           import os, re
-
-          # 1. Update android directory build.gradle
-          for root, _, files in os.walk('android'):
-              for f in files:
-                  if f.startswith('build.gradle'):
-                      p = os.path.join(root, f)
-                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
-                          c = fl.read()
-                      c = re.sub(r'compileSdk(Version)?\s*=?\s*(flutter\.)?compileSdkVersion', 'compileSdk = 35', c)
-                      c = re.sub(r'compileSdkVersion\s+[0-9]+', 'compileSdkVersion 35', c)
-                      c = re.sub(r'compileSdk\s*=\s*[0-9]+', 'compileSdk = 35', c)
-                      c = c.replace('proguard-android.txt', 'proguard-android-optimize.txt')
-                      with open(p, 'w', encoding='utf-8') as fl:
-                          fl.write(c)
-
-          # 2. Update pub-cache plugin build.gradle files
-          cache_dir = os.path.expanduser('~/.pub-cache')
-          for root, _, files in os.walk(cache_dir):
-              for f in files:
-                  if f.endswith('.gradle'):
-                      p = os.path.join(root, f)
-                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
-                          c = fl.read()
-                      c = re.sub(r'compileSdkVersion\s+[0-9]+', 'compileSdkVersion 35', c)
-                      c = re.sub(r'compileSdk\s*=\s*[0-9]+', 'compileSdk = 35', c)
-                      c = c.replace('proguard-android.txt', 'proguard-android-optimize.txt')
-                      with open(p, 'w', encoding='utf-8') as fl:
-                          fl.write(c)
-
-          # 3. Patch Java source compatibility in cached libraries
-          for root, _, files in os.walk(cache_dir):
-              for f in files:
-                  if f.endswith('.java'):
-                      p = os.path.join(root, f)
-                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl:
-                          c = fl.read()
-                      if 'BAKLAVA' in c or 'Locale.of' in c or 'thread.threadId()' in c:
-                          c = c.replace('Build.VERSION_CODES.BAKLAVA', '999')
-                          c = c.replace('Locale.of(language, country, variant)', 'new Locale(language, country, variant)')
-                          c = c.replace('thread.threadId()', 'thread.getId()')
-                          with open(p, 'w', encoding='utf-8') as fl:
-                              fl.write(c)
+          b = "Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: const [Text('Jmovies', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)), Text('POWERED BY JUNAID JAVED', style: TextStyle(color: Colors.redAccent, fontSize: 8.5, fontWeight: FontWeight.bold))])"
+          for r, _, fs in os.walk('lib'):
+            for f in fs:
+              if f.endswith('.dart'):
+                p = os.path.join(r, f)
+                c = open(p, encoding='utf-8', errors='ignore').read()
+                m = re.search(r'(const\s+)?Text\s*\(\s*[\'"]J[mM]ovies[\'"]', c)
+                if m and 'JUNAID JAVED' not in c:
+                  s = m.start()
+                  fp = c.find('(', s)
+                  if fp != -1:
+                    cnt, e = 0, -1
+                    for i in range(fp, len(c)):
+                      if c[i] == '(': cnt += 1
+                      elif c[i] == ')':
+                        cnt -= 1
+                        if cnt == 0: e = i + 1; break
+                    if e != -1: open(p, 'w', encoding='utf-8').write(c[:s] + b + c[e:])
           EOF
 
-          cat << 'EOF' >> android/build.gradle
+      - name: Inject Cache & Auto-Delete Native Player
+        run: |
+          mkdir -p lib/screens/player
+          cat << 'EOF' > lib/screens/player/player_screen.dart
+          import 'dart:async';
+          import 'dart:io';
+          import 'package:flutter/material.dart';
+          import 'package:flutter/services.dart';
+          import 'package:video_player/video_player.dart';
+          import 'package:wakelock_plus/wakelock_plus.dart';
 
-          allprojects {
-              afterEvaluate { project ->
-                  if (project.hasProperty("android")) {
-                      project.android {
-                          try { compileSdkVersion 35 } catch (e) {}
-                          try { compileSdk = 35 } catch (e) {}
-                          try {
-                              lintOptions {
-                                  abortOnError false
-                                  checkReleaseBuilds false
-                              }
-                          } catch (e) {}
-                      }
-                  }
+          class PlayerScreen extends StatefulWidget {
+            final dynamic movie, show, episode, mediaItem, media, item;
+            final int? tmdbId, id, seasonNumber, episodeNumber, season, number;
+            final String? title, name, customStreamUrl;
+            final bool isTv;
+            final bool? isMovie;
+
+            const PlayerScreen({super.key, this.movie, this.show, this.episode, this.mediaItem, this.media, this.item, this.tmdbId, this.id, this.title, this.name, this.isTv = false, this.isMovie, this.seasonNumber, this.episodeNumber, this.season, this.number, this.customStreamUrl});
+            const PlayerScreen.forMovie(this.movie, {super.key, this.show, this.episode, this.mediaItem, this.media, this.item, this.tmdbId, this.id, this.title, this.name, this.isTv = false, this.isMovie = true, this.seasonNumber, this.episodeNumber, this.season, this.number, this.customStreamUrl});
+            const PlayerScreen.forEpisode({super.key, this.show, this.episode, this.movie, this.mediaItem, this.media, this.item, this.tmdbId, this.id, this.title, this.name, this.isTv = true, this.isMovie = false, this.seasonNumber, this.episodeNumber, this.season, this.number, this.customStreamUrl});
+
+            @override State<PlayerScreen> createState() => _PlayerScreenState();
+          }
+
+          class _PlayerScreenState extends State<PlayerScreen> {
+            VideoPlayerController? _videoController;
+            File? _tempVideoFile;
+            HttpClient? _httpClient;
+            StreamSubscription? _downloadSub;
+            IOSink? _fileSink;
+            bool _isDownloading = true, _isPlayerReady = false, _showControls = true, _isDragging = false;
+            double _downloadProgress = 0.0;
+            int _downloadedBytes = 0, _totalBytes = 0;
+            Timer? _controlsTimer;
+
+            String get _resolvedTitle {
+              if (widget.title != null && widget.title!.isNotEmpty) return widget.title!;
+              if (widget.name != null && widget.name!.isNotEmpty) return widget.name!;
+              for (var o in [widget.mediaItem, widget.movie, widget.media, widget.item]) {
+                if (o != null) {
+                  try {
+                    final t = o.title ?? o.name;
+                    if (t != null && t.toString().isNotEmpty) return t.toString();
+                  } catch (_) {}
+                }
               }
+              return 'Now Playing';
+            }
+
+            String get _resolvedStreamUrl => (widget.customStreamUrl != null && widget.customStreamUrl!.isNotEmpty)
+                ? widget.customStreamUrl!
+                : 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
+
+            @override void initState() {
+              super.initState();
+              _setupSystem();
+              _startCaching();
+              _resetTimer();
+            }
+
+            Future<void> _setupSystem() async {
+              await WakelockPlus.enable();
+              await SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
+              await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+            }
+
+            Future<void> _startCaching() async {
+              try {
+                final tempDir = Directory.systemTemp;
+                _tempVideoFile = File('${tempDir.path}/jmovies_cache_${DateTime.now().millisecondsSinceEpoch}.mp4');
+                _fileSink = _tempVideoFile!.openWrite();
+                _httpClient = HttpClient();
+                final req = await _httpClient!.getUrl(Uri.parse(_resolvedStreamUrl));
+                final res = await req.close();
+                _totalBytes = res.contentLength;
+                bool started = false;
+
+                _downloadSub = res.listen(
+                  (c) async {
+                    _fileSink?.add(c);
+                    _downloadedBytes += c.length;
+                    if (_totalBytes > 0 && mounted) setState(() => _downloadProgress = (_downloadedBytes / _totalBytes).clamp(0.0, 1.0));
+                    if (!started && _downloadedBytes >= (3 * 1024 * 1024)) {
+                      started = true;
+                      await _fileSink?.flush();
+                      _initPlayer();
+                    }
+                  },
+                  onDone: () async {
+                    await _fileSink?.flush();
+                    await _fileSink?.close();
+                    _fileSink = null;
+                    if (mounted) setState(() => _isDownloading = false);
+                    if (!started) _initPlayer();
+                  },
+                  cancelOnError: true,
+                );
+              } catch (_) {}
+            }
+
+            Future<void> _initPlayer() async {
+              if (_tempVideoFile == null || !await _tempVideoFile!.exists()) return;
+              _videoController = VideoPlayerController.file(_tempVideoFile!)
+                ..initialize().then((_) {
+                  if (mounted) {
+                    setState(() => _isPlayerReady = true);
+                    _videoController!.play();
+                    _videoController!.addListener(() { if (mounted && !_isDragging) setState(() {}); });
+                  }
+                });
+            }
+
+            void _resetTimer() {
+              _controlsTimer?.cancel();
+              _controlsTimer = Timer(const Duration(seconds: 4), () {
+                if (mounted && (_videoController?.value.isPlaying ?? false)) setState(() => _showControls = false);
+              });
+            }
+
+            void _seek(int s) {
+              if (_videoController == null || !_videoController!.value.isInitialized) return;
+              final t = _videoController!.value.position + Duration(seconds: s);
+              _videoController!.seekTo(t < Duration.zero ? Duration.zero : t);
+              _resetTimer();
+            }
+
+            String _fmt(Duration d) {
+              final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+              final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+              return d.inHours > 0 ? '${d.inHours}:$m:$s' : '$m:$s';
+            }
+
+            @override void dispose() {
+              _downloadSub?.cancel();
+              _httpClient?.close();
+              try { _fileSink?.close(); } catch (_) {}
+              _controlsTimer?.cancel();
+              _videoController?.dispose();
+              if (_tempVideoFile != null && _tempVideoFile!.existsSync()) {
+                try { _tempVideoFile!.deleteSync(); } catch (_) {}
+              }
+              WakelockPlus.disable();
+              SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+              SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+              super.dispose();
+            }
+
+            @override Widget build(BuildContext context) {
+              final sN = widget.seasonNumber ?? widget.season;
+              final eN = widget.episodeNumber ?? widget.episode ?? widget.number;
+              final title = widget.isTv && sN != null && eN != null ? '$_resolvedTitle • S${sN}E$eN' : _resolvedTitle;
+
+              return Scaffold(
+                backgroundColor: Colors.black,
+                body: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: () { setState(() => _showControls = !_showControls); if (_showControls) _resetTimer(); },
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (_isPlayerReady && _videoController != null)
+                        Center(child: AspectRatio(aspectRatio: _videoController!.value.aspectRatio, child: VideoPlayer(_videoController!)))
+                      else
+                        Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                          const CircularProgressIndicator(color: Colors.redAccent, strokeWidth: 3),
+                          const SizedBox(height: 16),
+                          Text('Buffering stream (${(_downloadProgress * 100).toInt()}%)...', style: const TextStyle(color: Colors.white, fontSize: 13)),
+                        ])),
+                      if (_showControls) Positioned(top: 14, left: 14, right: 14, child: Row(
+                        children: [
+                          CircleAvatar(backgroundColor: Colors.black54, child: IconButton(icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 18), onPressed: () => Navigator.pop(context))),
+                          const SizedBox(width: 12),
+                          Expanded(child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold))),
+                          if (_isDownloading) Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.redAccent)),
+                            child: Text('${(_downloadProgress * 100).toInt()}% Cached', style: const TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                          )
+                        ],
+                      )),
+                      if (_showControls && _isPlayerReady && _videoController != null) Center(child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(iconSize: 42, icon: const Icon(Icons.replay_10_rounded, color: Colors.white), onPressed: () => _seek(-10)),
+                          const SizedBox(width: 36),
+                          IconButton(iconSize: 68, icon: Icon(_videoController!.value.isPlaying ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded, color: Colors.redAccent), onPressed: () { setState(() => _videoController!.value.isPlaying ? _videoController!.pause() : _videoController!.play()); _resetTimer(); }),
+                          const SizedBox(width: 36),
+                          IconButton(iconSize: 42, icon: const Icon(Icons.forward_10_rounded, color: Colors.white), onPressed: () => _seek(10)),
+                        ],
+                      )),
+                      if (_isPlayerReady && _videoController != null && _showControls) Align(
+                        alignment: Alignment.bottomCenter,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                          decoration: const BoxDecoration(gradient: LinearGradient(colors: [Colors.transparent, Colors.black87], begin: Alignment.topCenter, end: Alignment.bottomCenter)),
+                          child: Column(mainAxisSize: MainAxisSize.min, children: [
+                            SliderTheme(
+                              data: SliderTheme.of(context).copyWith(trackHeight: 3, activeTrackColor: Colors.redAccent, thumbColor: Colors.redAccent, thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5)),
+                              child: Slider(
+                                value: _videoController!.value.duration.inMilliseconds > 0 ? (_videoController!.value.position.inMilliseconds / _videoController!.value.duration.inMilliseconds).clamp(0.0, 1.0) : 0.0,
+                                onChangeStart: (_) => _isDragging = true,
+                                onChangeEnd: (v) { _isDragging = false; _videoController!.seekTo(Duration(milliseconds: (_videoController!.value.duration.inMilliseconds * v).toInt())); },
+                                onChanged: (_) => setState(() {}),
+                              ),
+                            ),
+                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                              Text(_fmt(_videoController!.value.position), style: const TextStyle(color: Colors.white, fontSize: 11)),
+                              Text(_fmt(_videoController!.value.duration), style: const TextStyle(color: Colors.white54, fontSize: 11)),
+                            ]),
+                          ]),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
           }
           EOF
+          cp lib/screens/player/player_screen.dart lib/screens/player_screen.dart 2>/dev/null || true
 
-      - name: Build and Package Valid APK
+      - name: Patch Plugins (SDK 34 & Proguard)
         run: |
-          flutter build apk --release || true
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
+          find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
+          echo 'subprojects { afterEvaluate { project -> if (project.hasProperty("android")) { project.android { compileSdkVersion 34 } } } }' >> android/build.gradle
 
-          echo "Searching generated APK files across runner workspace:"
-          find . -name "*.apk" -ls
-
-          APK_FILE=$(find . -name "*.apk" 2>/dev/null | grep -E "release|app" | head -n 1)
-
-          if [ -z "$APK_FILE" ]; then
-            echo "No APK produced by Flutter CLI, assembling directly via Gradle..."
-            cd android && ./gradlew assembleRelease && cd ..
-            APK_FILE=$(find . -name "*.apk" 2>/dev/null | grep -E "release|app" | head -n 1)
-          fi
-
-          echo "Selected APK: $APK_FILE"
-          mkdir -p build/app/outputs/flutter-apk
-          FINAL_APK="build/app/outputs/flutter-apk/app-release.apk"
-
-          if [ ! -f ~/.android/debug.keystore ]; then
-            mkdir -p ~/.android
-            keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          fi
-
-          BT_DIR=$(ls -d /usr/local/lib/android/sdk/build-tools/* | sort -V | tail -n 1)
-          $BT_DIR/zipalign -f -p 4 "$APK_FILE" aligned.apk 2>/dev/null || cp "$APK_FILE" aligned.apk
-          $BT_DIR/apksigner sign --ks ~/.android/debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android --out "$FINAL_APK" aligned.apk 2>/dev/null || cp "$APK_FILE" "$FINAL_APK"
-
-          echo "APK successfully verified and placed at $FINAL_APK"
+      - name: Build APK
+        run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
