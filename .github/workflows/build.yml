@@ -45,33 +45,36 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Recreate Android Project & Force SDK 21 / MultiDex
+      - name: Recreate Android Project & Configure Gradle
         run: |
           rm -rf android
           flutter create . --platforms=android --org com.jmovies.app
           mkdir -p assets/icons assets/images
           
-          # Permissions
+          # Permissions in Manifest
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
           
-          # Force minSdkVersion 21 & MultiDex (Required for video_player)
-          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle
-          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle
-          sed -i 's/defaultConfig {/defaultConfig {\n        multiDexEnabled true/g' android/app/build.gradle
-          
-          # Global compileSdk 34 for all third-party plugins
-          echo 'subprojects { afterEvaluate { project -> if (project.hasProperty("android")) { project.android { compileSdkVersion 34 } } } }' >> android/build.gradle
+          # Safe patch for both .gradle and .gradle.kts (Sets minSdk 21 & compileSdk 34)
+          find android -name "build.gradle.kts" -exec sed -i -E 's/minSdk = .*/minSdk = 21/g' {} + 2>/dev/null || true
+          find android -name "build.gradle.kts" -exec sed -i -E 's/compileSdk = .*/compileSdk = 34/g' {} + 2>/dev/null || true
+          find android -name "build.gradle" -exec sed -i -E 's/minSdkVersion .*/minSdkVersion 21/g' {} + 2>/dev/null || true
+          find android -name "build.gradle" -exec sed -i -E 's/minSdk = .*/minSdk = 21/g' {} + 2>/dev/null || true
+          find android -name "build.gradle" -exec sed -i -E 's/compileSdkVersion .*/compileSdkVersion 34/g' {} + 2>/dev/null || true
+          find android -name "build.gradle" -exec sed -i -E 's/compileSdk = .*/compileSdk = 34/g' {} + 2>/dev/null || true
 
-      - name: Install Dependencies & Patch
+          # Gradle performance & Jetifier settings
+          echo "android.useAndroidX=true" >> android/gradle.properties
+          echo "android.enableJetifier=true" >> android/gradle.properties
+          echo "org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=512m" >> android/gradle.properties
+
+      - name: Install Dependencies
         run: |
-          flutter pub add video_player wakelock_plus http
+          flutter pub add video_player wakelock_plus http 2>/dev/null || true
           flutter pub get
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
-          find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
 
-      - name: Build APK Cleanly
+      - name: Build APK
         run: flutter build apk --release
 
       - name: Upload APK
