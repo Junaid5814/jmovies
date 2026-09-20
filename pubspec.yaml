@@ -17,7 +17,7 @@ dependencies:
   # Networking (TMDB API)
   dio: ^5.7.0
 
-  # Images
+  # Images & Caching
   cached_network_image: ^3.4.1
   flutter_svg: ^2.0.10+1
   shimmer: ^3.0.0
@@ -28,7 +28,7 @@ dependencies:
   smooth_page_indicator: ^1.1.0
   google_fonts: ^6.2.1
 
-  # Video playback (HLS / DASH / MP4)
+  # Video playback
   video_player: ^2.9.2
   wakelock_plus: ^1.2.8
   screen_brightness: ^1.0.1
