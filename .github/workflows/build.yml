@@ -11,7 +11,14 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Extract ZIP If Present
+      # Backup your newly committed files before unzip
+      - name: Backup Native Files
+        run: |
+          mkdir -p /tmp/backup_screens /tmp/backup_services
+          cp lib/screens/player/player_screen.dart /tmp/backup_screens/ 2>/dev/null || true
+          cp lib/data/services/m3u8_extractor_service.dart /tmp/backup_services/ 2>/dev/null || true
+
+      - name: Extract ZIP
         run: |
           LATEST_ZIP=$(ls -t *.zip 2>/dev/null | head -n 1)
           if [ -n "$LATEST_ZIP" ]; then
@@ -19,10 +26,15 @@ jobs:
           fi
           if [ ! -f "pubspec.yaml" ]; then
             DIR=$(find . -maxdepth 3 -name "pubspec.yaml" -exec dirname {} \; | head -n 1)
-            if [ -n "$DIR" ]; then
-              cp -r $DIR/* .
-            fi
+            cp -r $DIR/* .
           fi
+
+      # Restore your native files so zip doesn't overwrite them
+      - name: Restore Native Files
+        run: |
+          mkdir -p lib/screens/player lib/data/services
+          cp -f /tmp/backup_screens/player_screen.dart lib/screens/player/ 2>/dev/null || true
+          cp -f /tmp/backup_services/m3u8_extractor_service.dart lib/data/services/ 2>/dev/null || true
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -37,96 +49,20 @@ jobs:
 
       - name: Recreate Android Project
         run: |
-          rm -rf android
           flutter create . --platforms=android --org com.jmovies.app
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
-      - name: Setup Tokens & .env File
+      - name: Install Dependencies & Patch Proguard
         run: |
-          KEY="dac07662083decf2616c4e68d22342c9"
-          TOKEN="eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkYWMwNzY2MjA4M2RlY2YyNjE2YzRlNjhkMjIzNDJjOSIsIm5iZiI6MTc4OTI5NDQ3My45NDgsInN1YiI6IjZhYTY3Nzg5YjFmNzgyMjZjYjU3ODAyNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nXRm_2AAufGAeHFBuMLf4Dg5yViQ-jlTEF2CkYp6WL4"
-          cat << EOF > .env
-          TMDB_ACCESS_TOKEN=$TOKEN
-          TMDB_API_KEY=$KEY
-          BASE_URL=https://api.themoviedb.org/3
-          IMAGE_BASE_URL=https://image.tmdb.org/t/p/w500
-          EOF
-          cp .env assets/.env 2>/dev/null || true
+          flutter pub add video_player wakelock_plus http
+          flutter pub get
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
 
-      - name: Install Dependencies
-        run: flutter pub get
-
-      - name: Configure Android SDK 36
-        run: |
-          python3 - << 'EOF'
-          import os, re
-
-          # 1. Patch android project files (.gradle and .gradle.kts)
-          for root, _, files in os.walk('android'):
-              for f in files:
-                  if 'build.gradle' in f:
-                      p = os.path.join(root, f)
-                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl: c = fl.read()
-                      c = re.sub(r'compileSdk(Version)?\s*=?\s*(flutter\.)?compileSdkVersion', 'compileSdk = 36', c)
-                      c = re.sub(r'compileSdkVersion\s+[0-9]+', 'compileSdkVersion 36', c)
-                      c = re.sub(r'compileSdk\s*=\s*[0-9]+', 'compileSdk = 36', c)
-                      c = c.replace('proguard-android.txt', 'proguard-android-optimize.txt')
-                      with open(p, 'w', encoding='utf-8') as fl: fl.write(c)
-
-          # 2. Patch pub-cache dependencies
-          cache_dir = os.path.expanduser('~/.pub-cache')
-          for root, _, files in os.walk(cache_dir):
-              for f in files:
-                  if f.endswith('.gradle') or f.endswith('.gradle.kts'):
-                      p = os.path.join(root, f)
-                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl: c = fl.read()
-                      c = re.sub(r'compileSdkVersion\s+[0-9]+', 'compileSdkVersion 36', c)
-                      c = re.sub(r'compileSdk\s*=\s*[0-9]+', 'compileSdk = 36', c)
-                      c = c.replace('proguard-android.txt', 'proguard-android-optimize.txt')
-                      with open(p, 'w', encoding='utf-8') as fl: fl.write(c)
-
-          # 3. Baklava symbol patch in Java source
-          for root, _, files in os.walk(cache_dir):
-              for f in files:
-                  if f.endswith('.java'):
-                      p = os.path.join(root, f)
-                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl: c = fl.read()
-                      if 'BAKLAVA' in c or 'Locale.of' in c or 'thread.threadId()' in c:
-                          c = c.replace('Build.VERSION_CODES.BAKLAVA', '999')
-                          c = c.replace('Locale.of(language, country, variant)', 'new Locale(language, country, variant)')
-                          c = c.replace('thread.threadId()', 'thread.getId()')
-                          with open(p, 'w', encoding='utf-8') as fl: fl.write(c)
-          EOF
-
-          echo "android.suppressUnsupportedCompileSdk=36" >> android/gradle.properties
-
-      - name: Build and Sign Valid APK
-        run: |
-          cd android
-          ./gradlew :app:assembleRelease
-          cd ..
-
-          APK_FILE=$(find android/app/build/outputs/apk/release build -name "*.apk" 2>/dev/null | head -n 1)
-          echo "Built APK at: $APK_FILE"
-
-          mkdir -p build/app/outputs/flutter-apk
-          TARGET_APK="build/app/outputs/flutter-apk/app-release.apk"
-
-          BT_DIR=$(ls -d /usr/local/lib/android/sdk/build-tools/* | sort -V | tail -n 1)
-          if [ ! -f ~/.android/debug.keystore ]; then
-            mkdir -p ~/.android
-            keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          fi
-
-          if [ -n "$APK_FILE" ] && [ -f "$APK_FILE" ]; then
-            $BT_DIR/zipalign -f -p 4 "$APK_FILE" aligned.apk
-            $BT_DIR/apksigner sign --ks ~/.android/debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android --out "$TARGET_APK" aligned.apk
-            $BT_DIR/apksigner verify --verbose "$TARGET_APK"
-          else
-            echo "ERROR: APK file was not produced!"
-            exit 1
-          fi
+      - name: Build APK
+        run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
