@@ -45,22 +45,34 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Recreate Android Project
+      - name: Recreate Android Project & Force SDK 21 / MultiDex
         run: |
+          rm -rf android
           flutter create . --platforms=android --org com.jmovies.app
           mkdir -p assets/icons assets/images
+          
+          # Permissions
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
+          
+          # Force minSdkVersion 21 & MultiDex (Required for video_player)
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle
+          sed -i 's/defaultConfig {/defaultConfig {\n        multiDexEnabled true/g' android/app/build.gradle
+          
+          # Global compileSdk 34 for all third-party plugins
+          echo 'subprojects { afterEvaluate { project -> if (project.hasProperty("android")) { project.android { compileSdkVersion 34 } } } }' >> android/build.gradle
 
-      - name: Install Dependencies & Patch Proguard
+      - name: Install Dependencies & Patch
         run: |
           flutter pub add video_player wakelock_plus http
           flutter pub get
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
           find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
+          find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
 
-      - name: Build APK (Verbose Mode)
-        run: flutter build apk --release --verbose
+      - name: Build APK Cleanly
+        run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
