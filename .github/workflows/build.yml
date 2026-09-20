@@ -57,36 +57,36 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: Patch Android SDK 35 & Plugins
+      - name: Configure Android SDK 36 (Kotlin & Groovy DSL)
         run: |
           python3 - << 'EOF'
           import os, re
 
-          # compileSdk 35 in android project
+          # 1. Patch android project files (.gradle and .gradle.kts)
           for root, _, files in os.walk('android'):
               for f in files:
-                  if f.startswith('build.gradle'):
+                  if 'build.gradle' in f:
                       p = os.path.join(root, f)
                       with open(p, 'r', encoding='utf-8', errors='ignore') as fl: c = fl.read()
-                      c = re.sub(r'compileSdk(Version)?\s*=?\s*(flutter\.)?compileSdkVersion', 'compileSdk = 35', c)
-                      c = re.sub(r'compileSdkVersion\s+[0-9]+', 'compileSdkVersion 35', c)
-                      c = re.sub(r'compileSdk\s*=\s*[0-9]+', 'compileSdk = 35', c)
+                      c = re.sub(r'compileSdk(Version)?\s*=?\s*(flutter\.)?compileSdkVersion', 'compileSdk = 36', c)
+                      c = re.sub(r'compileSdkVersion\s+[0-9]+', 'compileSdkVersion 36', c)
+                      c = re.sub(r'compileSdk\s*=\s*[0-9]+', 'compileSdk = 36', c)
                       c = c.replace('proguard-android.txt', 'proguard-android-optimize.txt')
                       with open(p, 'w', encoding='utf-8') as fl: fl.write(c)
 
-          # compileSdk 35 in pub cache
+          # 2. Patch pub-cache dependencies
           cache_dir = os.path.expanduser('~/.pub-cache')
           for root, _, files in os.walk(cache_dir):
               for f in files:
-                  if f.endswith('.gradle'):
+                  if f.endswith('.gradle') or f.endswith('.gradle.kts'):
                       p = os.path.join(root, f)
                       with open(p, 'r', encoding='utf-8', errors='ignore') as fl: c = fl.read()
-                      c = re.sub(r'compileSdkVersion\s+[0-9]+', 'compileSdkVersion 35', c)
-                      c = re.sub(r'compileSdk\s*=\s*[0-9]+', 'compileSdk = 35', c)
+                      c = re.sub(r'compileSdkVersion\s+[0-9]+', 'compileSdkVersion 36', c)
+                      c = re.sub(r'compileSdk\s*=\s*[0-9]+', 'compileSdk = 36', c)
                       c = c.replace('proguard-android.txt', 'proguard-android-optimize.txt')
                       with open(p, 'w', encoding='utf-8') as fl: fl.write(c)
 
-          # Baklava symbol fix for sqflite Java code
+          # 3. Baklava symbol patch in Java source
           for root, _, files in os.walk(cache_dir):
               for f in files:
                   if f.endswith('.java'):
@@ -99,15 +99,16 @@ jobs:
                           with open(p, 'w', encoding='utf-8') as fl: fl.write(c)
           EOF
 
+          echo "android.suppressUnsupportedCompileSdk=36" >> android/gradle.properties
+
       - name: Build and Sign Valid APK
         run: |
-          flutter build apk --release || true
+          cd android
+          ./gradlew assembleRelease -x checkReleaseAarMetadata
+          cd ..
 
-          APK_FILE=$(find android build -name "*.apk" 2>/dev/null | grep -E "release|app" | head -n 1)
-          if [ -z "$APK_FILE" ]; then
-            cd android && ./gradlew assembleRelease && cd ..
-            APK_FILE=$(find android build -name "*.apk" 2>/dev/null | grep -E "release|app" | head -n 1)
-          fi
+          APK_FILE=$(find android/app/build/outputs/apk/release build -name "*.apk" 2>/dev/null | head -n 1)
+          echo "Built APK at: $APK_FILE"
 
           mkdir -p build/app/outputs/flutter-apk
           TARGET_APK="build/app/outputs/flutter-apk/app-release.apk"
@@ -118,9 +119,14 @@ jobs:
             keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-          $BT_DIR/zipalign -f -p 4 "$APK_FILE" aligned.apk
-          $BT_DIR/apksigner sign --ks ~/.android/debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android --out "$TARGET_APK" aligned.apk
-          $BT_DIR/apksigner verify --verbose "$TARGET_APK"
+          if [ -n "$APK_FILE" ] && [ -f "$APK_FILE" ]; then
+            $BT_DIR/zipalign -f -p 4 "$APK_FILE" aligned.apk
+            $BT_DIR/apksigner sign --ks ~/.android/debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android --out "$TARGET_APK" aligned.apk
+            $BT_DIR/apksigner verify --verbose "$TARGET_APK"
+          else
+            echo "ERROR: APK file was not produced!"
+            exit 1
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
