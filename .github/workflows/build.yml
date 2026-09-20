@@ -11,7 +11,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Extract ZIP
+      - name: Extract ZIP If Present
         run: |
           LATEST_ZIP=$(ls -t *.zip 2>/dev/null | head -n 1)
           if [ -n "$LATEST_ZIP" ]; then
@@ -42,24 +42,6 @@ jobs:
           mkdir -p assets/icons assets/images
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
 
-      - name: Pin Safe Plugin Versions
-        run: |
-          python3 - << 'EOF'
-          with open('pubspec.yaml', 'r') as f:
-              c = f.read()
-          if 'dependency_overrides:' in c:
-              c = c.replace('dependency_overrides:', 'dependency_overrides:\n  sqflite_android: "<2.4.0"')
-          else:
-              c += '\ndependency_overrides:\n  sqflite_android: "<2.4.0"\n'
-          with open('pubspec.yaml', 'w') as f:
-              f.write(c)
-          EOF
-
-      - name: Add Dependencies
-        run: |
-          flutter pub add carousel_slider:^5.0.0 webview_flutter wakelock_plus
-          flutter pub get
-
       - name: Setup Tokens & .env File
         run: |
           KEY="dac07662083decf2616c4e68d22342c9"
@@ -72,49 +54,73 @@ jobs:
           EOF
           cp .env assets/.env 2>/dev/null || true
 
-      - name: Inject Branding Safely
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Patch Android SDK 35 & Plugins
         run: |
           python3 - << 'EOF'
           import os, re
-          branding = """Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: const [
-              Text('Jmovies', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-              Text('POWERED BY JUNAID JAVED', style: TextStyle(color: Colors.redAccent, fontSize: 8.5, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
-            ],
-          )"""
-          for r, _, fs in os.walk('lib'):
-            for f in fs:
-              if f.endswith('.dart'):
-                p = os.path.join(r, f)
-                with open(p, 'r', encoding='utf-8', errors='ignore') as fl: t = fl.read()
-                m = re.search(r'(const\s+)?Text\s*\(\s*[\'"]J[mM]ovies[\'"]', t)
-                if m and 'JUNAID JAVED' not in t:
-                  start = m.start()
-                  first_paren = t.find('(', start)
-                  if first_paren != -1:
-                    count, end = 0, -1
-                    for i in range(first_paren, len(t)):
-                      if t[i] == '(': count += 1
-                      elif t[i] == ')':
-                        count -= 1
-                        if count == 0: end = i + 1; break
-                    if end != -1:
-                      t = t[:start] + branding + t[end:]
-                      with open(p, 'w', encoding='utf-8') as fl: fl.write(t)
+
+          # compileSdk 35 in android project
+          for root, _, files in os.walk('android'):
+              for f in files:
+                  if f.startswith('build.gradle'):
+                      p = os.path.join(root, f)
+                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl: c = fl.read()
+                      c = re.sub(r'compileSdk(Version)?\s*=?\s*(flutter\.)?compileSdkVersion', 'compileSdk = 35', c)
+                      c = re.sub(r'compileSdkVersion\s+[0-9]+', 'compileSdkVersion 35', c)
+                      c = re.sub(r'compileSdk\s*=\s*[0-9]+', 'compileSdk = 35', c)
+                      c = c.replace('proguard-android.txt', 'proguard-android-optimize.txt')
+                      with open(p, 'w', encoding='utf-8') as fl: fl.write(c)
+
+          # compileSdk 35 in pub cache
+          cache_dir = os.path.expanduser('~/.pub-cache')
+          for root, _, files in os.walk(cache_dir):
+              for f in files:
+                  if f.endswith('.gradle'):
+                      p = os.path.join(root, f)
+                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl: c = fl.read()
+                      c = re.sub(r'compileSdkVersion\s+[0-9]+', 'compileSdkVersion 35', c)
+                      c = re.sub(r'compileSdk\s*=\s*[0-9]+', 'compileSdk = 35', c)
+                      c = c.replace('proguard-android.txt', 'proguard-android-optimize.txt')
+                      with open(p, 'w', encoding='utf-8') as fl: fl.write(c)
+
+          # Baklava symbol fix for sqflite Java code
+          for root, _, files in os.walk(cache_dir):
+              for f in files:
+                  if f.endswith('.java'):
+                      p = os.path.join(root, f)
+                      with open(p, 'r', encoding='utf-8', errors='ignore') as fl: c = fl.read()
+                      if 'BAKLAVA' in c or 'Locale.of' in c or 'thread.threadId()' in c:
+                          c = c.replace('Build.VERSION_CODES.BAKLAVA', '999')
+                          c = c.replace('Locale.of(language, country, variant)', 'new Locale(language, country, variant)')
+                          c = c.replace('thread.threadId()', 'thread.getId()')
+                          with open(p, 'w', encoding='utf-8') as fl: fl.write(c)
           EOF
 
-      - name: Patch Plugins (SDK 34 & Proguard)
+      - name: Build and Sign Valid APK
         run: |
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
-          find . -name "build.gradle" -exec sed -i "s/proguard-android\.txt/proguard-android-optimize\.txt/g" {} + 2>/dev/null || true
-          echo 'subprojects { afterEvaluate { project -> if (project.hasProperty("android")) { project.android { compileSdkVersion 34 } } } }' >> android/build.gradle
+          flutter build apk --release || true
 
-      - name: Build APK
-        run: flutter build apk --release
+          APK_FILE=$(find android build -name "*.apk" 2>/dev/null | grep -E "release|app" | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            cd android && ./gradlew assembleRelease && cd ..
+            APK_FILE=$(find android build -name "*.apk" 2>/dev/null | grep -E "release|app" | head -n 1)
+          fi
+
+          mkdir -p build/app/outputs/flutter-apk
+          TARGET_APK="build/app/outputs/flutter-apk/app-release.apk"
+
+          BT_DIR=$(ls -d /usr/local/lib/android/sdk/build-tools/* | sort -V | tail -n 1)
+          if [ ! -f ~/.android/debug.keystore ]; then
+            mkdir -p ~/.android
+            keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          $BT_DIR/zipalign -f -p 4 "$APK_FILE" aligned.apk
+          $BT_DIR/apksigner sign --ks ~/.android/debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android --out "$TARGET_APK" aligned.apk
+          $BT_DIR/apksigner verify --verbose "$TARGET_APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
