@@ -34,6 +34,16 @@ jobs:
           cp -f /tmp/backup_screens/player_screen.dart lib/screens/player/ 2>/dev/null || true
           cp -f /tmp/backup_services/m3u8_extractor_service.dart lib/data/services/ 2>/dev/null || true
 
+      - name: Ensure Environment File & Assets Exist
+        run: |
+          if [ -f ".env.example" ]; then
+            cp .env.example .env
+          else
+            touch .env
+          fi
+          mkdir -p assets/icons assets/images
+          touch assets/icons/.gitkeep assets/images/.gitkeep
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -49,16 +59,15 @@ jobs:
         run: |
           rm -rf android
           flutter create . --platforms=android --org com.jmovies.app
-          mkdir -p assets/icons assets/images
           
           # Permissions
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
           
-          # Force minSdk 21 & compileSdk 34 in all build.gradle files
+          # Force minSdk 21 & compileSdk 36 (for modern plugins)
           find android -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/minSdk = .*/minSdk = 21/g' {} + 2>/dev/null || true
           find android -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/minSdkVersion .*/minSdkVersion 21/g' {} + 2>/dev/null || true
-          find android -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/compileSdk = .*/compileSdk = 34/g' {} + 2>/dev/null || true
-          find android -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/compileSdkVersion .*/compileSdkVersion 34/g' {} + 2>/dev/null || true
+          find android -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/compileSdk = .*/compileSdk = 36/g' {} + 2>/dev/null || true
+          find android -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/compileSdkVersion .*/compileSdkVersion 36/g' {} + 2>/dev/null || true
 
           # Properties
           echo "android.useAndroidX=true" >> android/gradle.properties
@@ -70,13 +79,13 @@ jobs:
           flutter pub add video_player wakelock_plus http 2>/dev/null || true
           flutter pub get
           
-          # Fix proguard-android.txt in inappwebview and all dependencies
+          # Fix proguard-android.txt in dependencies
           find $HOME/.pub-cache -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i 's/proguard-android\.txt/proguard-android-optimize\.txt/g' {} + 2>/dev/null || true
           find android -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i 's/proguard-android\.txt/proguard-android-optimize\.txt/g' {} + 2>/dev/null || true
           
-          # Fix compileSdk across all plugins
-          find $HOME/.pub-cache -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 34/g' {} + 2>/dev/null || true
-          find $HOME/.pub-cache -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 34/g' {} + 2>/dev/null || true
+          # Set compileSdk 36 across plugin caches
+          find $HOME/.pub-cache -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/compileSdkVersion[ =]+[0-9]+/compileSdkVersion 36/g' {} + 2>/dev/null || true
+          find $HOME/.pub-cache -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -exec sed -i -E 's/compileSdk[ =]+[0-9]+/compileSdk 36/g' {} + 2>/dev/null || true
 
       - name: Build APK
         run: flutter build apk --release --no-pub
