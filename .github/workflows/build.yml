@@ -81,6 +81,11 @@ jobs:
       - name: Install Flutter dependencies
         run: flutter pub get
 
+      - name: Fix InAppWebView Proguard Error
+        shell: bash
+        run: |
+          find $HOME/.pub-cache -name "build.gradle" -type f -exec sed -i -e 's/proguard-android\.txt/proguard-android-optimize.txt/g' {} + || true
+
       - name: Build release APK
         run: |
           flutter build apk \
