@@ -1,4 +1,4 @@
-name: Build Release APK
+name: Build JMovies APK
 
 on:
   workflow_dispatch:
@@ -6,36 +6,92 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: jmovies-android-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  build-android:
+    name: Build Android Release
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+
     steps:
-      - name: Checkout Code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
-          java-version: '17'
+          distribution: zulu
+          java-version: "17"
 
-      - name: Setup Flutter
+      - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
+          channel: stable
           cache: true
 
-      - name: Install Dependencies
+      - name: Show Flutter version
+        run: flutter --version
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          if [ -z "$TMDB_READ_TOKEN" ]; then
+            echo "TMDB_READ_TOKEN repository secret is missing."
+            exit 1
+          fi
+
+      - name: Generate Android project
+        run: |
+          flutter create \
+            --platforms=android \
+            --org=com.junaid \
+            --project-name=jmovies \
+            .
+
+      - name: Configure Android permissions and minimum SDK
+        shell: bash
+        run: |
+          MANIFEST_FILE="android/app/src/main/AndroidManifest.xml"
+
+          sed -i '/<manifest/a\
+              <uses-permission android:name="android.permission.INTERNET" />\
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\
+              <uses-permission android:name="android.permission.WAKE_LOCK" />' \
+              "$MANIFEST_FILE"
+
+          if [ -f "android/app/build.gradle.kts" ]; then
+            sed -i \
+              's/minSdk = flutter.minSdkVersion/minSdk = 24/' \
+              android/app/build.gradle.kts
+          elif [ -f "android/app/build.gradle" ]; then
+            sed -i \
+              's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' \
+              android/app/build.gradle
+          fi
+
+      - name: Install Flutter dependencies
         run: flutter pub get
 
-      - name: Generate Luxury App Icon
-        run: dart run flutter_launcher_icons
+      - name: Build release APK
+        run: |
+          flutter build apk \
+            --release \
+            --dart-define=TMDB_ACCESS_TOKEN="$TMDB_READ_TOKEN" \
+            --dart-define=APP_ENVIRONMENT=production
 
-      - name: Build APK (Release)
-        run: flutter build apk --release
-
-      - name: Upload Production APK
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: jmovies-v1.0-release
+          name: jmovies-android-release
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
