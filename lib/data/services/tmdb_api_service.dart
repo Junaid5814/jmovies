@@ -1,16 +1,16 @@
 import 'package:dio/dio.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
+
+import '../../core/config/app_config.dart';
 import '../../core/constants/api_constants.dart';
 import '../models/movie_model.dart';
 import '../models/tv_model.dart';
-
 /// Thin wrapper around TMDB's REST API. This is the ONLY class allowed to
 /// know about TMDB endpoints — screens/providers should go through
 /// MovieRepository instead of calling this directly.
 ///
 /// Auth uses the TMDB v4 Read Access Token via `Authorization: Bearer`,
-/// loaded from TMDB_ACCESS_TOKEN in .env (never hardcoded in source — see
-/// .env.example for setup).
+/// supplied securely at build time through the TMDB_ACCESS_TOKEN
+/// dart-define value. The token is never hardcoded in source code.
 class TmdbApiService {
   final Dio _dio;
 
@@ -21,7 +21,7 @@ class TmdbApiService {
             connectTimeout: const Duration(seconds: 10),
             receiveTimeout: const Duration(seconds: 10),
             headers: {
-              'Authorization': 'Bearer ${dotenv.env['TMDB_ACCESS_TOKEN']}',
+              'Authorization': 'Bearer ${AppConfig.tmdbAccessToken}',
               'Content-Type': 'application/json',
             },
           ),
