@@ -39,11 +39,6 @@ dependencies:
 
   # Device and player utilities
   wakelock_plus: ^1.2.8
-  screen_brightness: ^1.0.1
-
-  # Temporary configuration loader
-  # This will be removed after the secure configuration files are installed.
-  flutter_dotenv: ^5.1.0
 
   # Utilities
   equatable: ^2.0.5
