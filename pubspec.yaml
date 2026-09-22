@@ -33,12 +33,13 @@ dependencies:
   path_provider: ^2.1.5
   sqflite: ^2.3.3+1
 
-  # Temporary player dependency
-  # This remains until the native Media3 player bridge is added.
-    # Native video engine with HLS audio and subtitle track selection
+  # NATIVE PLAYER DEPENDENCIES
   media_kit: ^1.2.6
   media_kit_video: ^2.0.1
   media_kit_libs_video: ^1.0.7
+
+  # BACKGROUND SCRAPER (M3U8 HLS Link nikalne ke liye)
+  flutter_inappwebview: ^6.0.0
 
   # Device and player utilities
   wakelock_plus: ^1.2.8
@@ -50,11 +51,9 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-
   flutter_lints: ^4.0.0
 
 flutter:
   uses-material-design: true
-
   assets:
     - assets/icons/
