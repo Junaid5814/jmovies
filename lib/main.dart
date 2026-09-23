@@ -1,19 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:media_kit/media_kit.dart'; // YEH IMPORT LAZMI HAI
+import 'package:media_kit/media_kit.dart';
 
-// Aapke baqi imports (screens waghaira)
 import 'screens/splash/splash_screen.dart';
-import 'core/theme/app_theme.dart';
 
 void main() async {
-  // 1. Flutter bindings zaroori hain
   WidgetsFlutterBinding.ensureInitialized();
   
-  // 2. MediaKit Native Player ko initialize karein
+  // MediaKit Native Video Engine Initialize
   MediaKit.ensureInitialized(); 
 
-  // 3. App Run karein
   runApp(
     const ProviderScope(
       child: MyApp(),
@@ -29,7 +25,8 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'JMovies',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.darkTheme, // Aapki apni theme yahan aayegi
+      // Standard dark theme use kiya hai taake missing theme ka error na aaye
+      theme: ThemeData.dark(),
       home: const SplashScreen(),
     );
   }
