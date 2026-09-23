@@ -68,9 +68,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   StreamSubscription<Tracks>? _tracksSubscription;
   StreamSubscription<bool>? _bufferingSubscription;
 
-  HeadlessInAppWebView? _headlessWebView;
   bool _linkFound = false;
-
   Tracks _tracks = const Tracks();
   bool _isLoading = true;
   bool _isBuffering = false;
@@ -145,27 +143,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     _tracksSubscription = _player.stream.tracks.listen((tracks) {
       if (!mounted) return;
-      setState(() {
-        _tracks = tracks;
-      });
+      setState(() => _tracks = tracks);
     });
 
     _bufferingSubscription = _player.stream.buffering.listen((buffering) {
       if (!mounted) return;
-      setState(() {
-        _isBuffering = buffering;
-      });
+      setState(() => _isBuffering = buffering);
     });
 
     _errorSubscription = _player.stream.error.listen((message) {
       if (!mounted || message.trim().isEmpty) return;
       setState(() {
-        _errorMessage = 'Video could not be played. Please check the stream connection.';
+        _errorMessage = 'Native playback failed. Link might be protected.';
         _isLoading = false;
       });
     });
 
-    _loadVideoInBackground();
+    // Timeout logic
+    Future.delayed(const Duration(seconds: 25), () {
+      if (!_linkFound && mounted) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = 'Stream extraction failed. Please try again.';
+        });
+      }
+    });
   }
 
   Future<void> _enterFullscreen() async {
@@ -177,102 +179,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
   }
 
-  Future<void> _loadVideoInBackground() async {
-    if (!mounted) return;
-
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-      _linkFound = false;
-    });
-
-    if (_resolvedId <= 0) {
-      setState(() {
-        _isLoading = false;
-        _errorMessage = 'Invalid Movie/TV ID.';
-      });
-      return;
-    }
-
-    // Embed URL
-    final targetUrl = _resolvedIsTv
-        ? 'https://vidsrc.net/embed/tv?tmdb=$_resolvedId&season=$_resolvedSeason&episode=$_resolvedEpisode'
-        : 'https://vidsrc.net/embed/movie?tmdb=$_resolvedId';
-
-    _headlessWebView = HeadlessInAppWebView(
-      initialUrlRequest: URLRequest(url: WebUri(targetUrl)),
-      initialSettings: InAppWebViewSettings(
-        javaScriptEnabled: true,
-        mediaPlaybackRequiresUserGesture: false,
-        useShouldInterceptRequest: true,
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      ),
-      onLoadStop: (controller, url) async {
-         // Auto play click simulation if needed
-         await controller.evaluateJavascript(source: """
-            var video = document.querySelector('video');
-            if (video) {
-                video.play();
-            }
-            var playBtn = document.querySelector('.play-btn');
-            if (playBtn) {
-                playBtn.click();
-            }
-         """);
-      },
-      shouldInterceptRequest: (controller, request) async {
-        final reqUrl = request.url.toString();
-        
-        // Match .m3u8 or .mp4
-        if ((reqUrl.contains('.m3u8') || reqUrl.contains('.mp4')) && !_linkFound) {
-            
-          // Filter out dummy/ads links
-          if (!reqUrl.contains('blank') && !reqUrl.contains('dummy') && !reqUrl.contains('ad')) {
-            _linkFound = true;
-            debugPrint('🔥 M3U8 FOUND IN BACKGROUND: $reqUrl');
-            _playExtractedLink(reqUrl, request.headers ?? {});
-          }
-        }
-        return null;
-      },
-    );
-
-    await _headlessWebView?.run();
-
-    // 25 second timeout
-    Future.delayed(const Duration(seconds: 25), () {
-      if (!_linkFound && mounted) {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = 'Stream extraction failed. Please try again.';
-        });
-        _disposeHeadlessWebView();
-      }
-    });
-  }
-
   void _playExtractedLink(String url, Map<String, String> extractedHeaders) async {
-    _disposeHeadlessWebView();
     if (!mounted) return;
     
-    // Construct headers
+    // Add default headers if missing to bypass 403 Forbidden
     final Map<String, String> headers = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      "Referer": "https://vidsrc.net/",
-      "Origin": "https://vidsrc.net"
+      "Referer": "https://vidlink.pro/",
+      "Origin": "https://vidlink.pro"
     };
-    
-    headers.addAll(extractedHeaders); // Add headers caught from interceptor
+    headers.addAll(extractedHeaders);
 
     try {
-      await _player.open(
-        Media(
-          url,
-          httpHeaders: headers,
-        ),
-        play: true,
-      );
-
+      await _player.open(Media(url, httpHeaders: headers), play: true);
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -283,55 +202,44 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
-          _errorMessage = 'Failed to play the stream.';
+          _errorMessage = 'Failed to load stream into Native Player.';
         });
       }
     }
   }
 
-  void _disposeHeadlessWebView() {
-    _headlessWebView?.dispose();
-    _headlessWebView = null;
-  }
-
   Future<void> _openSettings() async {
     if (_isLoading || _errorMessage != null) return;
-
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF121212),
       isScrollControlled: true,
       showDragHandle: true,
-      builder: (context) {
-        return _PlaybackSettingsSheet(player: _player, tracks: _tracks);
-      },
+      builder: (context) => _PlaybackSettingsSheet(player: _player, tracks: _tracks),
     );
-
-    if (mounted) {
-      setState(() {
-        _tracks = _player.state.tracks;
-      });
-    }
+    if (mounted) setState(() => _tracks = _player.state.tracks);
   }
 
   @override
   void dispose() {
-    _disposeHeadlessWebView();
     _errorSubscription?.cancel();
     _tracksSubscription?.cancel();
     _bufferingSubscription?.cancel();
     _player.dispose();
-
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     WakelockPlus.disable();
-
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final isLandscape = MediaQuery.orientationOf(context) == Orientation.landscape;
+    
+    // VidLink is heavily optimized for autoplay bypass compared to VidSrc
+    final targetUrl = _resolvedIsTv
+        ? 'https://vidlink.pro/tv/$_resolvedId/$_resolvedSeason/$_resolvedEpisode?autoplay=true'
+        : 'https://vidlink.pro/movie/$_resolvedId?autoplay=true';
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -340,11 +248,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           : AppBar(
               backgroundColor: Colors.black,
               foregroundColor: Colors.white,
-              title: Text(
-                _resolvedTitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
+              title: Text(_resolvedTitle, maxLines: 1, overflow: TextOverflow.ellipsis),
               actions: [
                 IconButton(
                   tooltip: 'Playback settings',
@@ -356,73 +260,121 @@ class _PlayerScreenState extends State<PlayerScreen> {
       body: SafeArea(
         top: !isLandscape,
         bottom: !isLandscape,
-        child: Column(
+        child: Stack(
+          fit: StackFit.expand,
           children: [
-            Expanded(
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (_errorMessage == null)
-                    Video(
-                      controller: _videoController,
-                      fit: BoxFit.contain,
-                      controls: AdaptiveVideoControls,
+            // 1. HIDDEN BUT ACTIVE WEBVIEW (Bypasses Cloudflare & Bot Detection)
+            if (!_linkFound && _errorMessage == null)
+              IgnorePointer(
+                child: Opacity(
+                  opacity: 0.0, // Invisible to user, visible to Cloudflare
+                  child: InAppWebView(
+                    initialUrlRequest: URLRequest(url: WebUri(targetUrl)),
+                    initialSettings: InAppWebViewSettings(
+                      javaScriptEnabled: true,
+                      mediaPlaybackRequiresUserGesture: false,
+                      useShouldInterceptRequest: true,
+                      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                     ),
-                  if (_isLoading)
-                    const ColoredBox(
-                      color: Colors.black,
-                      child: Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            CircularProgressIndicator(color: Color(0xFFE50914)),
-                            SizedBox(height: 16),
-                            Text(
-                              'Extracting Stream in Background...',
-                              style: TextStyle(color: Colors.white70, fontSize: 13),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  if (!_isLoading && _isBuffering && _errorMessage == null)
-                     ColoredBox(
-                      color: Colors.black.withOpacity(0.5),
-                      child: const Center(
-                        child: CircularProgressIndicator(color: Color(0xFFE50914)),
-                      ),
-                    ),
-                  if (_errorMessage != null)
-                    _PlayerErrorView(
-                      message: _errorMessage!,
-                      onRetry: _loadVideoInBackground,
-                    ),
-                  if (isLandscape && !_isLoading && _errorMessage == null)
-                    Positioned(
-                      top: 12,
-                      right: 12,
-                      child: SafeArea(
-                        child: IconButton.filledTonal(
-                          tooltip: 'Audio, subtitles and quality',
-                          onPressed: _openSettings,
-                          icon: const Icon(Icons.tune_rounded),
-                        ),
-                      ),
-                    ),
-                  if (isLandscape)
-                    Positioned(
-                      top: 12,
-                      left: 12,
-                      child: SafeArea(
-                        child: IconButton(
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white),
-                        ),
-                      ),
-                    ),
-                ],
+                    onLoadStop: (controller, url) async {
+                       await controller.evaluateJavascript(source: """
+                          setInterval(() => {
+                             let btn = document.querySelector('.play-btn, .vjs-big-play-button');
+                             if(btn) btn.click();
+                          }, 1000);
+                       """);
+                    },
+                    shouldInterceptRequest: (controller, request) async {
+                      final reqUrl = request.url.toString();
+                      if ((reqUrl.contains('.m3u8') || reqUrl.contains('.mp4')) && !_linkFound) {
+                        if (!reqUrl.contains('blank') && !reqUrl.contains('dummy')) {
+                          _linkFound = true;
+                          Map<String, String> headers = {};
+                          request.headers?.forEach((key, value) => headers[key] = value.toString());
+                          
+                          // Run on UI Thread
+                          Future.microtask(() => _playExtractedLink(reqUrl, headers));
+                        }
+                      }
+                      return null;
+                    },
+                  ),
+                ),
               ),
-            ),
+
+            // 2. NATIVE PLAYER (Shows up once link is found)
+            if (_linkFound && _errorMessage == null)
+              Video(
+                controller: _videoController,
+                fit: BoxFit.contain,
+                controls: AdaptiveVideoControls,
+              ),
+
+            // 3. LOADING UI (Overlays the hidden webview)
+            if (_isLoading)
+              const ColoredBox(
+                color: Colors.black,
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(color: Color(0xFFE50914)),
+                      SizedBox(height: 16),
+                      Text(
+                        'Bypassing Protection & Extracting...',
+                        style: TextStyle(color: Colors.white70, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+            // 4. BUFFERING OVERLAY
+            if (!_isLoading && _isBuffering && _errorMessage == null)
+               ColoredBox(
+                color: Colors.black.withOpacity(0.5),
+                child: const Center(
+                  child: CircularProgressIndicator(color: Color(0xFFE50914)),
+                ),
+              ),
+
+            // 5. ERROR UI
+            if (_errorMessage != null)
+              _PlayerErrorView(
+                message: _errorMessage!,
+                onRetry: () {
+                  setState(() {
+                    _errorMessage = null;
+                    _isLoading = true;
+                    _linkFound = false; // Restarts the hidden webview
+                  });
+                },
+              ),
+
+            // 6. NATIVE CONTROLS
+            if (isLandscape && !_isLoading && _errorMessage == null)
+              Positioned(
+                top: 12,
+                right: 12,
+                child: SafeArea(
+                  child: IconButton.filledTonal(
+                    tooltip: 'Audio, subtitles and quality',
+                    onPressed: _openSettings,
+                    icon: const Icon(Icons.tune_rounded),
+                  ),
+                ),
+              ),
+            if (isLandscape)
+              Positioned(
+                top: 12,
+                left: 12,
+                child: SafeArea(
+                  child: IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -468,81 +420,60 @@ class _PlayerErrorView extends StatelessWidget {
 }
 
 // ---------------- Settings Bottom Sheet Code below -----------------
-
 class _PlaybackSettingsSheet extends StatefulWidget {
   final Player player;
   final Tracks tracks;
-
   const _PlaybackSettingsSheet({required this.player, required this.tracks});
-
   @override
   State<_PlaybackSettingsSheet> createState() => _PlaybackSettingsSheetState();
 }
 
 class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
   late Tracks _tracks;
-
   @override
   void initState() {
     super.initState();
     _tracks = widget.tracks;
   }
-
-  List<AudioTrack> get _audioTracks {
-    return _uniqueById<AudioTrack>(_tracks.audio.where((track) => track.id != 'no').toList());
-  }
-
-  List<SubtitleTrack> get _subtitleTracks {
-    return _uniqueById<SubtitleTrack>(_tracks.subtitle);
-  }
-
-  List<VideoTrack> get _videoTracks {
-    return _uniqueById<VideoTrack>(_tracks.video.where((track) => track.id != 'no').toList());
-  }
+  List<AudioTrack> get _audioTracks => _uniqueById<AudioTrack>(_tracks.audio.where((track) => track.id != 'no').toList());
+  List<SubtitleTrack> get _subtitleTracks => _uniqueById<SubtitleTrack>(_tracks.subtitle);
+  List<VideoTrack> get _videoTracks => _uniqueById<VideoTrack>(_tracks.video.where((track) => track.id != 'no').toList());
 
   List<T> _uniqueById<T>(List<T> tracks) {
     final ids = <String>{};
     final result = <T>[];
     for (final track in tracks) {
       final dynamic value = track;
-      if (ids.add(value.id.toString())) {
-        result.add(track);
-      }
+      if (ids.add(value.id.toString())) result.add(track);
     }
     return result;
   }
 
   String _audioLabel(AudioTrack track) {
     if (track.id == 'auto') return 'Automatic';
-    final title = track.title?.trim();
-    final language = track.language?.trim();
-    if (title != null && title.isNotEmpty) return title;
-    if (language != null && language.isNotEmpty) return language.toUpperCase();
+    if (track.title?.trim().isNotEmpty ?? false) return track.title!.trim();
+    if (track.language?.trim().isNotEmpty ?? false) return track.language!.trim().toUpperCase();
     return 'Audio ${track.id}';
   }
 
   String _subtitleLabel(SubtitleTrack track) {
     if (track.id == 'no') return 'Off';
     if (track.id == 'auto') return 'Automatic';
-    final title = track.title?.trim();
-    final language = track.language?.trim();
-    if (title != null && title.isNotEmpty) return title;
-    if (language != null && language.isNotEmpty) return language.toUpperCase();
+    if (track.title?.trim().isNotEmpty ?? false) return track.title!.trim();
+    if (track.language?.trim().isNotEmpty ?? false) return track.language!.trim().toUpperCase();
     return 'Subtitle ${track.id}';
   }
 
   String _videoLabel(VideoTrack track) {
     if (track.id == 'auto') return 'Auto';
     if (track.h != null && track.h! > 0) return '${track.h}p';
-    final title = track.title?.trim();
-    if (title != null && title.isNotEmpty) return title;
+    if (track.title?.trim().isNotEmpty ?? false) return track.title!.trim();
     return 'Quality ${track.id}';
   }
 
   @override
   Widget build(BuildContext context) {
     final selected = widget.player.state.track;
-
     return SafeArea(
       child: FractionallySizedBox(
         heightFactor: 0.82,
@@ -552,49 +483,28 @@ class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
             const Text('Playback Settings', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700)),
             const SizedBox(height: 24),
             const _SettingsHeading(icon: Icons.language_rounded, title: 'Audio & Language'),
-            if (_audioTracks.isEmpty)
-              const _EmptyTrackMessage(message: 'No alternate audio track found.')
-            else
-              ..._audioTracks.map((track) => RadioListTile<String>(
-                    value: track.id,
-                    groupValue: selected.audio.id,
-                    activeColor: const Color(0xFFE50914),
-                    title: Text(_audioLabel(track), style: const TextStyle(color: Colors.white)),
-                    onChanged: (_) async {
-                      await widget.player.setAudioTrack(track);
-                      if (mounted) setState(() {});
-                    },
-                  )),
+            if (_audioTracks.isEmpty) const _EmptyTrackMessage(message: 'No alternate audio track found.')
+            else ..._audioTracks.map((track) => RadioListTile<String>(
+              value: track.id, groupValue: selected.audio.id, activeColor: const Color(0xFFE50914),
+              title: Text(_audioLabel(track), style: const TextStyle(color: Colors.white)),
+              onChanged: (_) async { await widget.player.setAudioTrack(track); if (mounted) setState(() {}); },
+            )),
             const Divider(color: Colors.white12, height: 32),
             const _SettingsHeading(icon: Icons.subtitles_rounded, title: 'Subtitles'),
-            if (_subtitleTracks.isEmpty)
-              const _EmptyTrackMessage(message: 'No subtitle track found.')
-            else
-              ..._subtitleTracks.map((track) => RadioListTile<String>(
-                    value: track.id,
-                    groupValue: selected.subtitle.id,
-                    activeColor: const Color(0xFFE50914),
-                    title: Text(_subtitleLabel(track), style: const TextStyle(color: Colors.white)),
-                    onChanged: (_) async {
-                      await widget.player.setSubtitleTrack(track);
-                      if (mounted) setState(() {});
-                    },
-                  )),
+            if (_subtitleTracks.isEmpty) const _EmptyTrackMessage(message: 'No subtitle track found.')
+            else ..._subtitleTracks.map((track) => RadioListTile<String>(
+              value: track.id, groupValue: selected.subtitle.id, activeColor: const Color(0xFFE50914),
+              title: Text(_subtitleLabel(track), style: const TextStyle(color: Colors.white)),
+              onChanged: (_) async { await widget.player.setSubtitleTrack(track); if (mounted) setState(() {}); },
+            )),
             const Divider(color: Colors.white12, height: 32),
             const _SettingsHeading(icon: Icons.high_quality_rounded, title: 'Video Quality'),
-            if (_videoTracks.isEmpty)
-              const _EmptyTrackMessage(message: 'Adaptive quality is controlled automatically.')
-            else
-              ..._videoTracks.map((track) => RadioListTile<String>(
-                    value: track.id,
-                    groupValue: selected.video.id,
-                    activeColor: const Color(0xFFE50914),
-                    title: Text(_videoLabel(track), style: const TextStyle(color: Colors.white)),
-                    onChanged: (_) async {
-                      await widget.player.setVideoTrack(track);
-                      if (mounted) setState(() {});
-                    },
-                  )),
+            if (_videoTracks.isEmpty) const _EmptyTrackMessage(message: 'Adaptive quality is controlled automatically.')
+            else ..._videoTracks.map((track) => RadioListTile<String>(
+              value: track.id, groupValue: selected.video.id, activeColor: const Color(0xFFE50914),
+              title: Text(_videoLabel(track), style: const TextStyle(color: Colors.white)),
+              onChanged: (_) async { await widget.player.setVideoTrack(track); if (mounted) setState(() {}); },
+            )),
           ],
         ),
       ),
@@ -603,33 +513,19 @@ class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
 }
 
 class _SettingsHeading extends StatelessWidget {
-  final IconData icon;
-  final String title;
-
+  final IconData icon; final String title;
   const _SettingsHeading({required this.icon, required this.title});
-
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, color: const Color(0xFFE50914)),
-        const SizedBox(width: 10),
-        Text(title, style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700)),
-      ],
-    );
+    return Row(children: [Icon(icon, color: const Color(0xFFE50914)), const SizedBox(width: 10), Text(title, style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700))]);
   }
 }
 
 class _EmptyTrackMessage extends StatelessWidget {
   final String message;
-
   const _EmptyTrackMessage({required this.message});
-
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
-      child: Text(message, style: const TextStyle(color: Colors.white54, fontSize: 13)),
-    );
+    return Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16), child: Text(message, style: const TextStyle(color: Colors.white54, fontSize: 13)));
   }
 }
