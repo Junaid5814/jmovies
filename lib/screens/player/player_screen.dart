@@ -6,7 +6,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../core/config/app_config.dart';
-import '../../data/models/video_source_model.dart';
+import '../../data/models/video_source_model.dart' hide AudioTrack, SubtitleTrack;
 import '../../data/services/stream_source_service.dart';
 
 class PlayerScreen extends StatefulWidget {
@@ -168,27 +168,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _videoController = VideoController(_player);
 
     _tracksSubscription = _player.stream.tracks.listen((tracks) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
       setState(() {
         _tracks = tracks;
       });
     });
 
     _bufferingSubscription = _player.stream.buffering.listen((buffering) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
       setState(() {
         _isBuffering = buffering;
       });
     });
 
     _errorSubscription = _player.stream.error.listen((message) {
-      if (!mounted || message.trim().isEmpty) {
-        return;
-      }
+      if (!mounted || message.trim().isEmpty) return;
       setState(() {
         _errorMessage = 'Video could not be played. Please check the stream connection.';
         _isLoading = false;
@@ -208,9 +202,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _loadVideo() async {
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
 
     setState(() {
       _isLoading = true;
@@ -245,13 +237,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
 
       if (bundle.sources.isEmpty) {
-        throw const FormatException(
-          'No playable master stream was returned.',
-        );
+        throw const FormatException('No playable master stream was returned.');
       }
 
       final source = bundle.sources.first;
-
       _usingDemoStream = source.id.startsWith('placeholder');
 
       await _player.open(
@@ -259,28 +248,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
         play: true,
       );
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         _isLoading = false;
         _tracks = _player.state.tracks;
       });
     } on TimeoutException {
-      if (!mounted) {
-        return;
-      }
-
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
         _errorMessage = 'The video took too long to load. Check your internet connection.';
       });
     } catch (error) {
-      if (!mounted) {
-        return;
-      }
-
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
         _errorMessage = 'Unable to load this video.';
@@ -289,9 +270,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _openSettings() async {
-    if (_isLoading || _errorMessage != null) {
-      return;
-    }
+    if (_isLoading || _errorMessage != null) return;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -319,12 +298,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _tracksSubscription?.cancel();
     _bufferingSubscription?.cancel();
     _player.dispose();
-    
-    // Exit full screen
+
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     WakelockPlus.disable();
-    
+
     super.dispose();
   }
 
@@ -424,8 +402,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
                 color: const Color(0xFF171717),
                 child: const Text(
-                  'Demo stream active — connect STREAM_API_BASE_URL '
-                  'to play your authorised catalogue.',
+                  'Demo stream active — connect STREAM_API_BASE_URL to play your catalogue.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Colors.white60,
@@ -501,12 +478,10 @@ class _PlaybackSettingsSheet extends StatefulWidget {
   });
 
   @override
-  State<_PlaybackSettingsSheet> createState() =>
-      _PlaybackSettingsSheetState();
+  State<_PlaybackSettingsSheet> createState() => _PlaybackSettingsSheetState();
 }
 
-class _PlaybackSettingsSheetState
-    extends State<_PlaybackSettingsSheet> {
+class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
   late Tracks _tracks;
 
   @override
@@ -516,17 +491,17 @@ class _PlaybackSettingsSheetState
   }
 
   List<AudioTrack> get _audioTracks {
-    return _uniqueById(
+    return _uniqueById<AudioTrack>(
       _tracks.audio.where((track) => track.id != 'no').toList(),
     );
   }
 
   List<SubtitleTrack> get _subtitleTracks {
-    return _uniqueById(_tracks.subtitle);
+    return _uniqueById<SubtitleTrack>(_tracks.subtitle);
   }
 
   List<VideoTrack> get _videoTracks {
-    return _uniqueById(
+    return _uniqueById<VideoTrack>(
       _tracks.video.where((track) => track.id != 'no').toList(),
     );
   }
@@ -543,67 +518,35 @@ class _PlaybackSettingsSheetState
         result.add(track);
       }
     }
-
     return result;
   }
 
   String _audioLabel(AudioTrack track) {
-    if (track.id == 'auto') {
-      return 'Automatic';
-    }
-
+    if (track.id == 'auto') return 'Automatic';
     final title = track.title?.trim();
     final language = track.language?.trim();
 
-    if (title != null && title.isNotEmpty) {
-      return title;
-    }
-
-    if (language != null && language.isNotEmpty) {
-      return language.toUpperCase();
-    }
-
+    if (title != null && title.isNotEmpty) return title;
+    if (language != null && language.isNotEmpty) return language.toUpperCase();
     return 'Audio ${track.id}';
   }
 
   String _subtitleLabel(SubtitleTrack track) {
-    if (track.id == 'no') {
-      return 'Off';
-    }
-
-    if (track.id == 'auto') {
-      return 'Automatic';
-    }
-
+    if (track.id == 'no') return 'Off';
+    if (track.id == 'auto') return 'Automatic';
     final title = track.title?.trim();
     final language = track.language?.trim();
 
-    if (title != null && title.isNotEmpty) {
-      return title;
-    }
-
-    if (language != null && language.isNotEmpty) {
-      return language.toUpperCase();
-    }
-
+    if (title != null && title.isNotEmpty) return title;
+    if (language != null && language.isNotEmpty) return language.toUpperCase();
     return 'Subtitle ${track.id}';
   }
 
   String _videoLabel(VideoTrack track) {
-    if (track.id == 'auto') {
-      return 'Auto';
-    }
-
-    if (track.h != null && track.h! > 0) {
-      return '${track.h}p';
-    }
-
+    if (track.id == 'auto') return 'Auto';
+    if (track.h != null && track.h! > 0) return '${track.h}p';
     final title = track.title?.trim();
-
-    if (title != null && title.isNotEmpty) {
-      return title;
-    }
-
+    if (title != null && title.isNotEmpty) return title;
     return 'Quality ${track.id}';
   }
 
@@ -646,10 +589,7 @@ class _PlaybackSettingsSheetState
                   ),
                   onChanged: (_) async {
                     await widget.player.setAudioTrack(track);
-
-                    if (mounted) {
-                      setState(() {});
-                    }
+                    if (mounted) setState(() {});
                   },
                 ),
               ),
@@ -674,10 +614,7 @@ class _PlaybackSettingsSheetState
                   ),
                   onChanged: (_) async {
                     await widget.player.setSubtitleTrack(track);
-
-                    if (mounted) {
-                      setState(() {});
-                    }
+                    if (mounted) setState(() {});
                   },
                 ),
               ),
@@ -702,10 +639,7 @@ class _PlaybackSettingsSheetState
                   ),
                   onChanged: (_) async {
                     await widget.player.setVideoTrack(track);
-
-                    if (mounted) {
-                      setState(() {});
-                    }
+                    if (mounted) setState(() {});
                   },
                 ),
               ),
@@ -729,10 +663,7 @@ class _SettingsHeading extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(
-          icon,
-          color: const Color(0xFFE50914),
-        ),
+        Icon(icon, color: const Color(0xFFE50914)),
         const SizedBox(width: 10),
         Text(
           title,
