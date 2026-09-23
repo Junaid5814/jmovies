@@ -5,9 +5,9 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
-// Aapke custom services aur fallback screen ke imports
-import '../../data/services/m3u8_extractor_service.dart';
-import 'watch_webview_screen.dart';
+import '../../core/config/app_config.dart';
+import '../../data/models/video_source_model.dart';
+import '../../data/services/stream_source_service.dart';
 
 class PlayerScreen extends StatefulWidget {
   final dynamic movie;
@@ -75,6 +75,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _isLoading = true;
   bool _isBuffering = false;
   String? _errorMessage;
+  bool _usingDemoStream = false;
 
   int get _resolvedId {
     if (widget.tmdbId != null && widget.tmdbId! > 0) {
@@ -82,15 +83,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
     try {
       final dynamic id = widget.movie?.id;
-      if (id != null) return int.tryParse(id.toString()) ?? 0;
+      if (id != null) {
+        return int.tryParse(id.toString()) ?? 0;
+      }
     } catch (_) {}
     try {
       final dynamic id = widget.show?.id;
-      if (id != null) return int.tryParse(id.toString()) ?? 0;
+      if (id != null) {
+        return int.tryParse(id.toString()) ?? 0;
+      }
     } catch (_) {}
     try {
       final dynamic id = widget.mediaItem?.id;
-      if (id != null) return int.tryParse(id.toString()) ?? 0;
+      if (id != null) {
+        return int.tryParse(id.toString()) ?? 0;
+      }
     } catch (_) {}
     return 0;
   }
@@ -122,7 +129,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   bool get _resolvedIsTv {
-    return widget.isTv || widget.show != null || widget.episode != null || widget.seasonNumber != null;
+    return widget.isTv ||
+        widget.show != null ||
+        widget.episode != null ||
+        widget.seasonNumber != null;
   }
 
   int get _resolvedSeason {
@@ -149,15 +159,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
-  String _getProviderUrl() {
-    final id = _resolvedId;
-    if (_resolvedIsTv) {
-      return 'https://vidlink.pro/tv/$id/$_resolvedSeason/$_resolvedEpisode?autoplay=true';
-    } else {
-      return 'https://vidlink.pro/movie/$id?autoplay=true';
-    }
-  }
-
   @override
   void initState() {
     super.initState();
@@ -167,21 +168,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _videoController = VideoController(_player);
 
     _tracksSubscription = _player.stream.tracks.listen((tracks) {
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
       setState(() {
         _tracks = tracks;
       });
     });
 
     _bufferingSubscription = _player.stream.buffering.listen((buffering) {
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
       setState(() {
         _isBuffering = buffering;
       });
     });
 
     _errorSubscription = _player.stream.error.listen((message) {
-      if (!mounted || message.trim().isEmpty) return;
+      if (!mounted || message.trim().isEmpty) {
+        return;
+      }
       setState(() {
         _errorMessage = 'Video could not be played. Please check the stream connection.';
         _isLoading = false;
@@ -201,7 +208,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _loadVideo() async {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
 
     setState(() {
       _isLoading = true;
@@ -213,41 +222,65 @@ class _PlayerScreenState extends State<PlayerScreen> {
         throw const FormatException('Invalid TMDB content ID.');
       }
 
-      // 1. Background Extractor call karo
-      final targetUrl = _getProviderUrl();
-      final m3u8Link = await M3u8Extractor.extractStreamUrl(targetUrl);
+      final service = StreamSourceService(
+        baseUrl: AppConfig.hasStreamApiBaseUrl
+            ? AppConfig.normalizedStreamApiBaseUrl
+            : null,
+      );
 
-      if (m3u8Link != null && m3u8Link.isNotEmpty) {
-        // 2. Play using MediaKit Native Player
-        await _player.open(
-          Media(
-            m3u8Link,
-            httpHeaders: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-              "Referer": "https://vidlink.pro/",
-              "Origin": "https://vidlink.pro"
-            },
-          ),
-          play: true,
-        );
+      final StreamBundle bundle;
 
-        if (!mounted) return;
-        setState(() {
-          _isLoading = false;
-          _tracks = _player.state.tracks;
-        });
+      if (_resolvedIsTv) {
+        bundle = await service
+            .fetchEpisodeStreamBundle(
+              _resolvedId,
+              _resolvedSeason,
+              _resolvedEpisode,
+            )
+            .timeout(const Duration(seconds: 30));
       } else {
-        // 3. Fallback to WebView
-        _fallbackToWebView();
+        bundle = await service
+            .fetchMovieStreamBundle(_resolvedId)
+            .timeout(const Duration(seconds: 30));
       }
+
+      if (bundle.sources.isEmpty) {
+        throw const FormatException(
+          'No playable master stream was returned.',
+        );
+      }
+
+      final source = bundle.sources.first;
+
+      _usingDemoStream = source.id.startsWith('placeholder');
+
+      await _player.open(
+        Media(source.url),
+        play: true,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isLoading = false;
+        _tracks = _player.state.tracks;
+      });
     } on TimeoutException {
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
+
       setState(() {
         _isLoading = false;
         _errorMessage = 'The video took too long to load. Check your internet connection.';
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
+
       setState(() {
         _isLoading = false;
         _errorMessage = 'Unable to load this video.';
@@ -255,23 +288,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
-  void _fallbackToWebView() {
-    if (!mounted) return;
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (context) => WatchWebViewScreen(
-          tmdbId: _resolvedId,
-          isTv: _resolvedIsTv,
-          season: _resolvedSeason,
-          episode: _resolvedEpisode,
-        ),
-      ),
-    );
-  }
-
   Future<void> _openSettings() async {
-    if (_isLoading || _errorMessage != null) return;
+    if (_isLoading || _errorMessage != null) {
+      return;
+    }
 
     await showModalBottomSheet<void>(
       context: context,
@@ -299,9 +319,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _tracksSubscription?.cancel();
     _bufferingSubscription?.cancel();
     _player.dispose();
+    
+    // Exit full screen
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     WakelockPlus.disable();
+    
     super.dispose();
   }
 
@@ -348,23 +371,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     const ColoredBox(
                       color: Colors.black,
                       child: Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            CircularProgressIndicator(color: Color(0xFFE50914)),
-                            SizedBox(height: 16),
-                            Text(
-                              'Extracting stream...',
-                              style: TextStyle(color: Colors.white70, fontSize: 13),
-                            ),
-                          ],
+                        child: CircularProgressIndicator(
+                          color: Color(0xFFE50914),
                         ),
                       ),
                     ),
                   if (!_isLoading && _isBuffering && _errorMessage == null)
                     const IgnorePointer(
                       child: Center(
-                        child: CircularProgressIndicator(color: Color(0xFFE50914)),
+                        child: CircularProgressIndicator(
+                          color: Color(0xFFE50914),
+                        ),
                       ),
                     ),
                   if (_errorMessage != null)
@@ -398,6 +415,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ],
               ),
             ),
+            if (!isLandscape && _usingDemoStream)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
+                ),
+                color: const Color(0xFF171717),
+                child: const Text(
+                  'Demo stream active — connect STREAM_API_BASE_URL '
+                  'to play your authorised catalogue.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white60,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -466,10 +501,12 @@ class _PlaybackSettingsSheet extends StatefulWidget {
   });
 
   @override
-  State<_PlaybackSettingsSheet> createState() => _PlaybackSettingsSheetState();
+  State<_PlaybackSettingsSheet> createState() =>
+      _PlaybackSettingsSheetState();
 }
 
-class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
+class _PlaybackSettingsSheetState
+    extends State<_PlaybackSettingsSheet> {
   late Tracks _tracks;
 
   @override
@@ -506,35 +543,67 @@ class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
         result.add(track);
       }
     }
+
     return result;
   }
 
   String _audioLabel(AudioTrack track) {
-    if (track.id == 'auto') return 'Automatic';
+    if (track.id == 'auto') {
+      return 'Automatic';
+    }
+
     final title = track.title?.trim();
     final language = track.language?.trim();
 
-    if (title != null && title.isNotEmpty) return title;
-    if (language != null && language.isNotEmpty) return language.toUpperCase();
+    if (title != null && title.isNotEmpty) {
+      return title;
+    }
+
+    if (language != null && language.isNotEmpty) {
+      return language.toUpperCase();
+    }
+
     return 'Audio ${track.id}';
   }
 
   String _subtitleLabel(SubtitleTrack track) {
-    if (track.id == 'no') return 'Off';
-    if (track.id == 'auto') return 'Automatic';
+    if (track.id == 'no') {
+      return 'Off';
+    }
+
+    if (track.id == 'auto') {
+      return 'Automatic';
+    }
+
     final title = track.title?.trim();
     final language = track.language?.trim();
 
-    if (title != null && title.isNotEmpty) return title;
-    if (language != null && language.isNotEmpty) return language.toUpperCase();
+    if (title != null && title.isNotEmpty) {
+      return title;
+    }
+
+    if (language != null && language.isNotEmpty) {
+      return language.toUpperCase();
+    }
+
     return 'Subtitle ${track.id}';
   }
 
   String _videoLabel(VideoTrack track) {
-    if (track.id == 'auto') return 'Auto';
-    if (track.h != null && track.h! > 0) return '${track.h}p';
+    if (track.id == 'auto') {
+      return 'Auto';
+    }
+
+    if (track.h != null && track.h! > 0) {
+      return '${track.h}p';
+    }
+
     final title = track.title?.trim();
-    if (title != null && title.isNotEmpty) return title;
+
+    if (title != null && title.isNotEmpty) {
+      return title;
+    }
+
     return 'Quality ${track.id}';
   }
 
@@ -550,53 +619,96 @@ class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
           children: [
             const Text(
               'Playback Settings',
-              style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700),
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+              ),
             ),
             const SizedBox(height: 24),
-            const _SettingsHeading(icon: Icons.language_rounded, title: 'Audio & Language'),
+            const _SettingsHeading(
+              icon: Icons.language_rounded,
+              title: 'Audio & Language',
+            ),
             if (_audioTracks.isEmpty)
-              const _EmptyTrackMessage(message: 'No alternate audio track found in this stream.')
+              const _EmptyTrackMessage(
+                message: 'No alternate audio track found in this stream.',
+              )
             else
-              ..._audioTracks.map((track) => RadioListTile<String>(
-                    value: track.id,
-                    groupValue: selected.audio.id,
-                    activeColor: const Color(0xFFE50914),
-                    title: Text(_audioLabel(track), style: const TextStyle(color: Colors.white)),
-                    onChanged: (_) async {
-                      await widget.player.setAudioTrack(track);
-                      if (mounted) setState(() {});
-                    },
-                  )),
+              ..._audioTracks.map(
+                (track) => RadioListTile<String>(
+                  value: track.id,
+                  groupValue: selected.audio.id,
+                  activeColor: const Color(0xFFE50914),
+                  title: Text(
+                    _audioLabel(track),
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  onChanged: (_) async {
+                    await widget.player.setAudioTrack(track);
+
+                    if (mounted) {
+                      setState(() {});
+                    }
+                  },
+                ),
+              ),
             const Divider(color: Colors.white12, height: 32),
-            const _SettingsHeading(icon: Icons.subtitles_rounded, title: 'Subtitles'),
+            const _SettingsHeading(
+              icon: Icons.subtitles_rounded,
+              title: 'Subtitles',
+            ),
             if (_subtitleTracks.isEmpty)
-              const _EmptyTrackMessage(message: 'No subtitle track found in this stream.')
+              const _EmptyTrackMessage(
+                message: 'No subtitle track found in this stream.',
+              )
             else
-              ..._subtitleTracks.map((track) => RadioListTile<String>(
-                    value: track.id,
-                    groupValue: selected.subtitle.id,
-                    activeColor: const Color(0xFFE50914),
-                    title: Text(_subtitleLabel(track), style: const TextStyle(color: Colors.white)),
-                    onChanged: (_) async {
-                      await widget.player.setSubtitleTrack(track);
-                      if (mounted) setState(() {});
-                    },
-                  )),
+              ..._subtitleTracks.map(
+                (track) => RadioListTile<String>(
+                  value: track.id,
+                  groupValue: selected.subtitle.id,
+                  activeColor: const Color(0xFFE50914),
+                  title: Text(
+                    _subtitleLabel(track),
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  onChanged: (_) async {
+                    await widget.player.setSubtitleTrack(track);
+
+                    if (mounted) {
+                      setState(() {});
+                    }
+                  },
+                ),
+              ),
             const Divider(color: Colors.white12, height: 32),
-            const _SettingsHeading(icon: Icons.high_quality_rounded, title: 'Video Quality'),
+            const _SettingsHeading(
+              icon: Icons.high_quality_rounded,
+              title: 'Video Quality',
+            ),
             if (_videoTracks.isEmpty)
-              const _EmptyTrackMessage(message: 'Adaptive quality is controlled automatically.')
+              const _EmptyTrackMessage(
+                message: 'Adaptive quality is controlled automatically.',
+              )
             else
-              ..._videoTracks.map((track) => RadioListTile<String>(
-                    value: track.id,
-                    groupValue: selected.video.id,
-                    activeColor: const Color(0xFFE50914),
-                    title: Text(_videoLabel(track), style: const TextStyle(color: Colors.white)),
-                    onChanged: (_) async {
-                      await widget.player.setVideoTrack(track);
-                      if (mounted) setState(() {});
-                    },
-                  )),
+              ..._videoTracks.map(
+                (track) => RadioListTile<String>(
+                  value: track.id,
+                  groupValue: selected.video.id,
+                  activeColor: const Color(0xFFE50914),
+                  title: Text(
+                    _videoLabel(track),
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  onChanged: (_) async {
+                    await widget.player.setVideoTrack(track);
+
+                    if (mounted) {
+                      setState(() {});
+                    }
+                  },
+                ),
+              ),
           ],
         ),
       ),
@@ -608,17 +720,27 @@ class _SettingsHeading extends StatelessWidget {
   final IconData icon;
   final String title;
 
-  const _SettingsHeading({required this.icon, required this.title});
+  const _SettingsHeading({
+    required this.icon,
+    required this.title,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(icon, color: const Color(0xFFE50914)),
+        Icon(
+          icon,
+          color: const Color(0xFFE50914),
+        ),
         const SizedBox(width: 10),
         Text(
           title,
-          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700),
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 17,
+            fontWeight: FontWeight.w700,
+          ),
         ),
       ],
     );
@@ -628,15 +750,23 @@ class _SettingsHeading extends StatelessWidget {
 class _EmptyTrackMessage extends StatelessWidget {
   final String message;
 
-  const _EmptyTrackMessage({required this.message});
+  const _EmptyTrackMessage({
+    required this.message,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 8,
+        vertical: 16,
+      ),
       child: Text(
         message,
-        style: const TextStyle(color: Colors.white54, fontSize: 13),
+        style: const TextStyle(
+          color: Colors.white54,
+          fontSize: 13,
+        ),
       ),
     );
   }
