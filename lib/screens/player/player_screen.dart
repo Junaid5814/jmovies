@@ -4,10 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
-
-import '../../core/config/app_config.dart';
-import '../../data/models/video_source_model.dart' hide AudioTrack, SubtitleTrack;
-import '../../data/services/stream_source_service.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 class PlayerScreen extends StatefulWidget {
   final dynamic movie;
@@ -71,74 +68,55 @@ class _PlayerScreenState extends State<PlayerScreen> {
   StreamSubscription<Tracks>? _tracksSubscription;
   StreamSubscription<bool>? _bufferingSubscription;
 
+  HeadlessInAppWebView? _headlessWebView;
+  bool _linkFound = false;
+
   Tracks _tracks = const Tracks();
   bool _isLoading = true;
   bool _isBuffering = false;
   String? _errorMessage;
-  bool _usingDemoStream = false;
 
   int get _resolvedId {
-    if (widget.tmdbId != null && widget.tmdbId! > 0) {
-      return widget.tmdbId!;
-    }
+    if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
     try {
       final dynamic id = widget.movie?.id;
-      if (id != null) {
-        return int.tryParse(id.toString()) ?? 0;
-      }
+      if (id != null) return int.tryParse(id.toString()) ?? 0;
     } catch (_) {}
     try {
       final dynamic id = widget.show?.id;
-      if (id != null) {
-        return int.tryParse(id.toString()) ?? 0;
-      }
+      if (id != null) return int.tryParse(id.toString()) ?? 0;
     } catch (_) {}
     try {
       final dynamic id = widget.mediaItem?.id;
-      if (id != null) {
-        return int.tryParse(id.toString()) ?? 0;
-      }
+      if (id != null) return int.tryParse(id.toString()) ?? 0;
     } catch (_) {}
     return 0;
   }
 
   String get _resolvedTitle {
     final suppliedTitle = widget.title?.trim();
-    if (suppliedTitle != null && suppliedTitle.isNotEmpty) {
-      return suppliedTitle;
-    }
+    if (suppliedTitle != null && suppliedTitle.isNotEmpty) return suppliedTitle;
     try {
       final dynamic value = widget.movie?.title;
-      if (value != null && value.toString().trim().isNotEmpty) {
-        return value.toString().trim();
-      }
+      if (value != null && value.toString().trim().isNotEmpty) return value.toString().trim();
     } catch (_) {}
     try {
       final dynamic value = widget.show?.name;
-      if (value != null && value.toString().trim().isNotEmpty) {
-        return value.toString().trim();
-      }
+      if (value != null && value.toString().trim().isNotEmpty) return value.toString().trim();
     } catch (_) {}
     try {
       final dynamic value = widget.mediaItem?.title;
-      if (value != null && value.toString().trim().isNotEmpty) {
-        return value.toString().trim();
-      }
+      if (value != null && value.toString().trim().isNotEmpty) return value.toString().trim();
     } catch (_) {}
     return 'JMovies Player';
   }
 
   bool get _resolvedIsTv {
-    return widget.isTv ||
-        widget.show != null ||
-        widget.episode != null ||
-        widget.seasonNumber != null;
+    return widget.isTv || widget.show != null || widget.episode != null || widget.seasonNumber != null;
   }
 
   int get _resolvedSeason {
-    if (widget.seasonNumber != null && widget.seasonNumber! > 0) {
-      return widget.seasonNumber!;
-    }
+    if (widget.seasonNumber != null && widget.seasonNumber! > 0) return widget.seasonNumber!;
     try {
       final dynamic value = widget.episode?.seasonNumber;
       return int.tryParse(value?.toString() ?? '') ?? 1;
@@ -148,9 +126,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   int get _resolvedEpisode {
-    if (widget.episodeNumber != null && widget.episodeNumber! > 0) {
-      return widget.episodeNumber!;
-    }
+    if (widget.episodeNumber != null && widget.episodeNumber! > 0) return widget.episodeNumber!;
     try {
       final dynamic value = widget.episode?.episodeNumber;
       return int.tryParse(value?.toString() ?? '') ?? 1;
@@ -184,12 +160,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _errorSubscription = _player.stream.error.listen((message) {
       if (!mounted || message.trim().isEmpty) return;
       setState(() {
-        _errorMessage = 'Video could not be played. Please check the stream connection.';
+        _errorMessage = 'Video could not be played. Stream issue.';
         _isLoading = false;
       });
     });
 
-    _loadVideo();
+    _loadVideoInBackground();
   }
 
   Future<void> _enterFullscreen() async {
@@ -201,72 +177,105 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
   }
 
-  Future<void> _loadVideo() async {
+  Future<void> _loadVideoInBackground() async {
     if (!mounted) return;
 
     setState(() {
       _isLoading = true;
       _errorMessage = null;
+      _linkFound = false;
     });
 
+    if (_resolvedId <= 0) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Invalid Movie/TV ID.';
+      });
+      return;
+    }
+
+    final targetUrl = _resolvedIsTv
+        ? 'https://vidlink.pro/tv/$_resolvedId/$_resolvedSeason/$_resolvedEpisode'
+        : 'https://vidlink.pro/movie/$_resolvedId';
+
+    // 1. Headless WebView start karna (Background mein)
+    _headlessWebView = HeadlessInAppWebView(
+      initialUrlRequest: URLRequest(url: WebUri(targetUrl)),
+      initialSettings: InAppWebViewSettings(
+        javaScriptEnabled: true,
+        mediaPlaybackRequiresUserGesture: false,
+        useShouldInterceptRequest: true,
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      ),
+      shouldInterceptRequest: (controller, request) async {
+        final reqUrl = request.url.toString();
+
+        // 2. M3U8 ya MP4 file ko background network traffic se pakarna
+        if ((reqUrl.contains('.m3u8') || reqUrl.contains('.mp4')) && !_linkFound) {
+          if (!reqUrl.contains('blank') && !reqUrl.contains('dummy')) {
+            _linkFound = true;
+            debugPrint('🔥 M3U8 FOUND IN BACKGROUND: $reqUrl');
+            
+            // 3. Link milte hi Native MediaKit Player ko de dena
+            _playExtractedLink(reqUrl);
+          }
+        }
+        return null;
+      },
+    );
+
+    await _headlessWebView?.run();
+
+    // 20 Second ka timeout agar link na mil sake
+    Future.delayed(const Duration(seconds: 20), () {
+      if (!_linkFound && mounted) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = 'Stream link extract nahi ho saka. Server busy hai, dobara try karein.';
+        });
+        _disposeHeadlessWebView();
+      }
+    });
+  }
+
+  void _playExtractedLink(String url) async {
+    // Link milne par background webview foran band kar do taake phone ki ram bache
+    _disposeHeadlessWebView();
+
+    if (!mounted) return;
+
     try {
-      if (_resolvedId <= 0) {
-        throw const FormatException('Invalid TMDB content ID.');
-      }
-
-      final service = StreamSourceService(
-        baseUrl: AppConfig.hasStreamApiBaseUrl
-            ? AppConfig.normalizedStreamApiBaseUrl
-            : null,
-      );
-
-      final StreamBundle bundle;
-
-      if (_resolvedIsTv) {
-        bundle = await service
-            .fetchEpisodeStreamBundle(
-              _resolvedId,
-              _resolvedSeason,
-              _resolvedEpisode,
-            )
-            .timeout(const Duration(seconds: 30));
-      } else {
-        bundle = await service
-            .fetchMovieStreamBundle(_resolvedId)
-            .timeout(const Duration(seconds: 30));
-      }
-
-      if (bundle.sources.isEmpty) {
-        throw const FormatException('No playable master stream was returned.');
-      }
-
-      final source = bundle.sources.first;
-      _usingDemoStream = source.id.startsWith('placeholder');
-
       await _player.open(
-        Media(source.url),
+        Media(
+          url,
+          httpHeaders: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://vidlink.pro/",
+            "Origin": "https://vidlink.pro"
+          },
+        ),
         play: true,
       );
 
-      if (!mounted) return;
-
-      setState(() {
-        _isLoading = false;
-        _tracks = _player.state.tracks;
-      });
-    } on TimeoutException {
-      if (!mounted) return;
-      setState(() {
-        _isLoading = false;
-        _errorMessage = 'The video took too long to load. Check your internet connection.';
-      });
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _isLoading = false;
-        _errorMessage = 'Unable to load this video.';
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _tracks = _player.state.tracks;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = 'Player mein video chalane mein masla aaya.';
+        });
+      }
     }
+  }
+
+  void _disposeHeadlessWebView() {
+    _headlessWebView?.dispose();
+    _headlessWebView = null;
   }
 
   Future<void> _openSettings() async {
@@ -278,10 +287,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       isScrollControlled: true,
       showDragHandle: true,
       builder: (context) {
-        return _PlaybackSettingsSheet(
-          player: _player,
-          tracks: _tracks,
-        );
+        return _PlaybackSettingsSheet(player: _player, tracks: _tracks);
       },
     );
 
@@ -294,6 +300,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   void dispose() {
+    _disposeHeadlessWebView();
     _errorSubscription?.cancel();
     _tracksSubscription?.cancel();
     _bufferingSubscription?.cancel();
@@ -349,23 +356,29 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     const ColoredBox(
                       color: Colors.black,
                       child: Center(
-                        child: CircularProgressIndicator(
-                          color: Color(0xFFE50914),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CircularProgressIndicator(color: Color(0xFFE50914)),
+                            SizedBox(height: 16),
+                            Text(
+                              'Extracting Stream in Background...',
+                              style: TextStyle(color: Colors.white70, fontSize: 13),
+                            ),
+                          ],
                         ),
                       ),
                     ),
                   if (!_isLoading && _isBuffering && _errorMessage == null)
                     const IgnorePointer(
                       child: Center(
-                        child: CircularProgressIndicator(
-                          color: Color(0xFFE50914),
-                        ),
+                        child: CircularProgressIndicator(color: Color(0xFFE50914)),
                       ),
                     ),
                   if (_errorMessage != null)
                     _PlayerErrorView(
                       message: _errorMessage!,
-                      onRetry: _loadVideo,
+                      onRetry: _loadVideoInBackground,
                     ),
                   if (isLandscape && !_isLoading && _errorMessage == null)
                     Positioned(
@@ -393,23 +406,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ],
               ),
             ),
-            if (!isLandscape && _usingDemoStream)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 10,
-                ),
-                color: const Color(0xFF171717),
-                child: const Text(
-                  'Demo stream active — connect STREAM_API_BASE_URL to play your catalogue.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white60,
-                    fontSize: 12,
-                  ),
-                ),
-              ),
           ],
         ),
       ),
@@ -421,10 +417,7 @@ class _PlayerErrorView extends StatelessWidget {
   final String message;
   final VoidCallback onRetry;
 
-  const _PlayerErrorView({
-    required this.message,
-    required this.onRetry,
-  });
+  const _PlayerErrorView({required this.message, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
@@ -436,20 +429,9 @@ class _PlayerErrorView extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
-                Icons.play_disabled_rounded,
-                color: Colors.white54,
-                size: 56,
-              ),
+              const Icon(Icons.play_disabled_rounded, color: Colors.white54, size: 56),
               const SizedBox(height: 16),
-              Text(
-                message,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 15,
-                ),
-              ),
+              Text(message, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 15)),
               const SizedBox(height: 20),
               FilledButton.icon(
                 onPressed: onRetry,
@@ -468,14 +450,13 @@ class _PlayerErrorView extends StatelessWidget {
   }
 }
 
+// ---------------- Settings Bottom Sheet Code below (Unchanged) -----------------
+
 class _PlaybackSettingsSheet extends StatefulWidget {
   final Player player;
   final Tracks tracks;
 
-  const _PlaybackSettingsSheet({
-    required this.player,
-    required this.tracks,
-  });
+  const _PlaybackSettingsSheet({required this.player, required this.tracks});
 
   @override
   State<_PlaybackSettingsSheet> createState() => _PlaybackSettingsSheetState();
@@ -491,9 +472,7 @@ class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
   }
 
   List<AudioTrack> get _audioTracks {
-    return _uniqueById<AudioTrack>(
-      _tracks.audio.where((track) => track.id != 'no').toList(),
-    );
+    return _uniqueById<AudioTrack>(_tracks.audio.where((track) => track.id != 'no').toList());
   }
 
   List<SubtitleTrack> get _subtitleTracks {
@@ -501,20 +480,15 @@ class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
   }
 
   List<VideoTrack> get _videoTracks {
-    return _uniqueById<VideoTrack>(
-      _tracks.video.where((track) => track.id != 'no').toList(),
-    );
+    return _uniqueById<VideoTrack>(_tracks.video.where((track) => track.id != 'no').toList());
   }
 
   List<T> _uniqueById<T>(List<T> tracks) {
     final ids = <String>{};
     final result = <T>[];
-
     for (final track in tracks) {
       final dynamic value = track;
-      final id = value.id.toString();
-
-      if (ids.add(id)) {
+      if (ids.add(value.id.toString())) {
         result.add(track);
       }
     }
@@ -525,7 +499,6 @@ class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
     if (track.id == 'auto') return 'Automatic';
     final title = track.title?.trim();
     final language = track.language?.trim();
-
     if (title != null && title.isNotEmpty) return title;
     if (language != null && language.isNotEmpty) return language.toUpperCase();
     return 'Audio ${track.id}';
@@ -536,7 +509,6 @@ class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
     if (track.id == 'auto') return 'Automatic';
     final title = track.title?.trim();
     final language = track.language?.trim();
-
     if (title != null && title.isNotEmpty) return title;
     if (language != null && language.isNotEmpty) return language.toUpperCase();
     return 'Subtitle ${track.id}';
@@ -560,89 +532,52 @@ class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
           children: [
-            const Text(
-              'Playback Settings',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 22,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
+            const Text('Playback Settings', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700)),
             const SizedBox(height: 24),
-            const _SettingsHeading(
-              icon: Icons.language_rounded,
-              title: 'Audio & Language',
-            ),
+            const _SettingsHeading(icon: Icons.language_rounded, title: 'Audio & Language'),
             if (_audioTracks.isEmpty)
-              const _EmptyTrackMessage(
-                message: 'No alternate audio track found in this stream.',
-              )
+              const _EmptyTrackMessage(message: 'No alternate audio track found.')
             else
-              ..._audioTracks.map(
-                (track) => RadioListTile<String>(
-                  value: track.id,
-                  groupValue: selected.audio.id,
-                  activeColor: const Color(0xFFE50914),
-                  title: Text(
-                    _audioLabel(track),
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                  onChanged: (_) async {
-                    await widget.player.setAudioTrack(track);
-                    if (mounted) setState(() {});
-                  },
-                ),
-              ),
+              ..._audioTracks.map((track) => RadioListTile<String>(
+                    value: track.id,
+                    groupValue: selected.audio.id,
+                    activeColor: const Color(0xFFE50914),
+                    title: Text(_audioLabel(track), style: const TextStyle(color: Colors.white)),
+                    onChanged: (_) async {
+                      await widget.player.setAudioTrack(track);
+                      if (mounted) setState(() {});
+                    },
+                  )),
             const Divider(color: Colors.white12, height: 32),
-            const _SettingsHeading(
-              icon: Icons.subtitles_rounded,
-              title: 'Subtitles',
-            ),
+            const _SettingsHeading(icon: Icons.subtitles_rounded, title: 'Subtitles'),
             if (_subtitleTracks.isEmpty)
-              const _EmptyTrackMessage(
-                message: 'No subtitle track found in this stream.',
-              )
+              const _EmptyTrackMessage(message: 'No subtitle track found.')
             else
-              ..._subtitleTracks.map(
-                (track) => RadioListTile<String>(
-                  value: track.id,
-                  groupValue: selected.subtitle.id,
-                  activeColor: const Color(0xFFE50914),
-                  title: Text(
-                    _subtitleLabel(track),
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                  onChanged: (_) async {
-                    await widget.player.setSubtitleTrack(track);
-                    if (mounted) setState(() {});
-                  },
-                ),
-              ),
+              ..._subtitleTracks.map((track) => RadioListTile<String>(
+                    value: track.id,
+                    groupValue: selected.subtitle.id,
+                    activeColor: const Color(0xFFE50914),
+                    title: Text(_subtitleLabel(track), style: const TextStyle(color: Colors.white)),
+                    onChanged: (_) async {
+                      await widget.player.setSubtitleTrack(track);
+                      if (mounted) setState(() {});
+                    },
+                  )),
             const Divider(color: Colors.white12, height: 32),
-            const _SettingsHeading(
-              icon: Icons.high_quality_rounded,
-              title: 'Video Quality',
-            ),
+            const _SettingsHeading(icon: Icons.high_quality_rounded, title: 'Video Quality'),
             if (_videoTracks.isEmpty)
-              const _EmptyTrackMessage(
-                message: 'Adaptive quality is controlled automatically.',
-              )
+              const _EmptyTrackMessage(message: 'Adaptive quality is controlled automatically.')
             else
-              ..._videoTracks.map(
-                (track) => RadioListTile<String>(
-                  value: track.id,
-                  groupValue: selected.video.id,
-                  activeColor: const Color(0xFFE50914),
-                  title: Text(
-                    _videoLabel(track),
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                  onChanged: (_) async {
-                    await widget.player.setVideoTrack(track);
-                    if (mounted) setState(() {});
-                  },
-                ),
-              ),
+              ..._videoTracks.map((track) => RadioListTile<String>(
+                    value: track.id,
+                    groupValue: selected.video.id,
+                    activeColor: const Color(0xFFE50914),
+                    title: Text(_videoLabel(track), style: const TextStyle(color: Colors.white)),
+                    onChanged: (_) async {
+                      await widget.player.setVideoTrack(track);
+                      if (mounted) setState(() {});
+                    },
+                  )),
           ],
         ),
       ),
@@ -654,10 +589,7 @@ class _SettingsHeading extends StatelessWidget {
   final IconData icon;
   final String title;
 
-  const _SettingsHeading({
-    required this.icon,
-    required this.title,
-  });
+  const _SettingsHeading({required this.icon, required this.title});
 
   @override
   Widget build(BuildContext context) {
@@ -665,14 +597,7 @@ class _SettingsHeading extends StatelessWidget {
       children: [
         Icon(icon, color: const Color(0xFFE50914)),
         const SizedBox(width: 10),
-        Text(
-          title,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 17,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
+        Text(title, style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700)),
       ],
     );
   }
@@ -681,24 +606,13 @@ class _SettingsHeading extends StatelessWidget {
 class _EmptyTrackMessage extends StatelessWidget {
   final String message;
 
-  const _EmptyTrackMessage({
-    required this.message,
-  });
+  const _EmptyTrackMessage({required this.message});
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 8,
-        vertical: 16,
-      ),
-      child: Text(
-        message,
-        style: const TextStyle(
-          color: Colors.white54,
-          fontSize: 13,
-        ),
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
+      child: Text(message, style: const TextStyle(color: Colors.white54, fontSize: 13)),
     );
   }
 }
