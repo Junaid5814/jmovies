@@ -62,7 +62,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
         transitionDuration: const Duration(milliseconds: 500),
         pageBuilder: (_, animation, __) => FadeTransition(
           opacity: animation,
-          child: const HomeScreen(),
+          child: HomeScreen(),
         ),
       ),
     );
