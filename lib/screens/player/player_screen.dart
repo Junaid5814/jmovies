@@ -160,7 +160,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _errorSubscription = _player.stream.error.listen((message) {
       if (!mounted || message.trim().isEmpty) return;
       setState(() {
-        _errorMessage = 'Video could not be played. Stream issue.';
+        _errorMessage = 'Video could not be played. Please check the stream connection.';
         _isLoading = false;
       });
     });
@@ -194,11 +194,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       return;
     }
 
+    // Embed URL
     final targetUrl = _resolvedIsTv
-        ? 'https://vidlink.pro/tv/$_resolvedId/$_resolvedSeason/$_resolvedEpisode'
-        : 'https://vidlink.pro/movie/$_resolvedId';
+        ? 'https://vidsrc.net/embed/tv?tmdb=$_resolvedId&season=$_resolvedSeason&episode=$_resolvedEpisode'
+        : 'https://vidsrc.net/embed/movie?tmdb=$_resolvedId';
 
-    // 1. Headless WebView start karna (Background mein)
     _headlessWebView = HeadlessInAppWebView(
       initialUrlRequest: URLRequest(url: WebUri(targetUrl)),
       initialSettings: InAppWebViewSettings(
@@ -207,17 +207,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
         useShouldInterceptRequest: true,
         userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
       ),
+      onLoadStop: (controller, url) async {
+         // Auto play click simulation if needed
+         await controller.evaluateJavascript(source: """
+            var video = document.querySelector('video');
+            if (video) {
+                video.play();
+            }
+            var playBtn = document.querySelector('.play-btn');
+            if (playBtn) {
+                playBtn.click();
+            }
+         """);
+      },
       shouldInterceptRequest: (controller, request) async {
         final reqUrl = request.url.toString();
-
-        // 2. M3U8 ya MP4 file ko background network traffic se pakarna
+        
+        // Match .m3u8 or .mp4
         if ((reqUrl.contains('.m3u8') || reqUrl.contains('.mp4')) && !_linkFound) {
-          if (!reqUrl.contains('blank') && !reqUrl.contains('dummy')) {
+            
+          // Filter out dummy/ads links
+          if (!reqUrl.contains('blank') && !reqUrl.contains('dummy') && !reqUrl.contains('ad')) {
             _linkFound = true;
             debugPrint('🔥 M3U8 FOUND IN BACKGROUND: $reqUrl');
-            
-            // 3. Link milte hi Native MediaKit Player ko de dena
-            _playExtractedLink(reqUrl);
+            _playExtractedLink(reqUrl, request.headers ?? {});
           }
         }
         return null;
@@ -226,33 +239,36 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     await _headlessWebView?.run();
 
-    // 20 Second ka timeout agar link na mil sake
-    Future.delayed(const Duration(seconds: 20), () {
+    // 25 second timeout
+    Future.delayed(const Duration(seconds: 25), () {
       if (!_linkFound && mounted) {
         setState(() {
           _isLoading = false;
-          _errorMessage = 'Stream link extract nahi ho saka. Server busy hai, dobara try karein.';
+          _errorMessage = 'Stream extraction failed. Please try again.';
         });
         _disposeHeadlessWebView();
       }
     });
   }
 
-  void _playExtractedLink(String url) async {
-    // Link milne par background webview foran band kar do taake phone ki ram bache
+  void _playExtractedLink(String url, Map<String, String> extractedHeaders) async {
     _disposeHeadlessWebView();
-
     if (!mounted) return;
+    
+    // Construct headers
+    final Map<String, String> headers = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "Referer": "https://vidsrc.net/",
+      "Origin": "https://vidsrc.net"
+    };
+    
+    headers.addAll(extractedHeaders); // Add headers caught from interceptor
 
     try {
       await _player.open(
         Media(
           url,
-          httpHeaders: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://vidlink.pro/",
-            "Origin": "https://vidlink.pro"
-          },
+          httpHeaders: headers,
         ),
         play: true,
       );
@@ -267,7 +283,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
-          _errorMessage = 'Player mein video chalane mein masla aaya.';
+          _errorMessage = 'Failed to play the stream.';
         });
       }
     }
@@ -370,8 +386,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ),
                   if (!_isLoading && _isBuffering && _errorMessage == null)
-                    const IgnorePointer(
-                      child: Center(
+                     ColoredBox(
+                      color: Colors.black.withOpacity(0.5),
+                      child: const Center(
                         child: CircularProgressIndicator(color: Color(0xFFE50914)),
                       ),
                     ),
@@ -450,7 +467,7 @@ class _PlayerErrorView extends StatelessWidget {
   }
 }
 
-// ---------------- Settings Bottom Sheet Code below (Unchanged) -----------------
+// ---------------- Settings Bottom Sheet Code below -----------------
 
 class _PlaybackSettingsSheet extends StatefulWidget {
   final Player player;
