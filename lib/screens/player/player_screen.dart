@@ -159,7 +159,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
       });
     });
 
-    // Timeout logic
     Future.delayed(const Duration(seconds: 25), () {
       if (!_linkFound && mounted) {
         setState(() {
@@ -182,13 +181,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _playExtractedLink(String url, Map<String, String> extractedHeaders) async {
     if (!mounted) return;
     
-    // Add default headers if missing to bypass 403 Forbidden
     final Map<String, String> headers = {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
       "Referer": "https://vidlink.pro/",
       "Origin": "https://vidlink.pro"
     };
-    headers.addAll(extractedHeaders);
+    
+    extractedHeaders.forEach((key, value) {
+      headers[key] = value;
+    });
 
     try {
       await _player.open(Media(url, httpHeaders: headers), play: true);
@@ -236,7 +237,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget build(BuildContext context) {
     final isLandscape = MediaQuery.orientationOf(context) == Orientation.landscape;
     
-    // VidLink is heavily optimized for autoplay bypass compared to VidSrc
+    // Yahan URL theek kiya gaya hai
     final targetUrl = _resolvedIsTv
         ? 'https://vidlink.pro/tv/$_resolvedId/$_resolvedSeason/$_resolvedEpisode?autoplay=true'
         : 'https://vidlink.pro/movie/$_resolvedId?autoplay=true';
@@ -263,23 +264,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // 1. HIDDEN BUT ACTIVE WEBVIEW (Bypasses Cloudflare & Bot Detection)
+            // 1. HIDDEN WEBVIEW
             if (!_linkFound && _errorMessage == null)
               IgnorePointer(
                 child: Opacity(
-                  opacity: 0.0, // Invisible to user, visible to Cloudflare
+                  opacity: 0.0, 
                   child: InAppWebView(
                     initialUrlRequest: URLRequest(url: WebUri(targetUrl)),
                     initialSettings: InAppWebViewSettings(
                       javaScriptEnabled: true,
                       mediaPlaybackRequiresUserGesture: false,
                       useShouldInterceptRequest: true,
-                      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                     ),
                     onLoadStop: (controller, url) async {
                        await controller.evaluateJavascript(source: """
                           setInterval(() => {
-                             let btn = document.querySelector('.play-btn, .vjs-big-play-button');
+                             let btn = document.querySelector('.play-btn, .vjs-big-play-button, #play-button');
                              if(btn) btn.click();
                           }, 1000);
                        """);
@@ -292,7 +293,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           Map<String, String> headers = {};
                           request.headers?.forEach((key, value) => headers[key] = value.toString());
                           
-                          // Run on UI Thread
                           Future.microtask(() => _playExtractedLink(reqUrl, headers));
                         }
                       }
@@ -302,7 +302,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
               ),
 
-            // 2. NATIVE PLAYER (Shows up once link is found)
+            // 2. NATIVE PLAYER
             if (_linkFound && _errorMessage == null)
               Video(
                 controller: _videoController,
@@ -310,7 +310,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 controls: AdaptiveVideoControls,
               ),
 
-            // 3. LOADING UI (Overlays the hidden webview)
+            // 3. LOADING UI
             if (_isLoading)
               const ColoredBox(
                 color: Colors.black,
@@ -321,7 +321,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       CircularProgressIndicator(color: Color(0xFFE50914)),
                       SizedBox(height: 16),
                       Text(
-                        'Bypassing Protection & Extracting...',
+                        'Extracting Multi-Language Streams...',
                         style: TextStyle(color: Colors.white70, fontSize: 13),
                       ),
                     ],
@@ -346,12 +346,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   setState(() {
                     _errorMessage = null;
                     _isLoading = true;
-                    _linkFound = false; // Restarts the hidden webview
+                    _linkFound = false;
                   });
                 },
               ),
 
-            // 6. NATIVE CONTROLS
+            // 6. NATIVE CONTROLS OVERLAY FOR LANDSCAPE
             if (isLandscape && !_isLoading && _errorMessage == null)
               Positioned(
                 top: 12,
@@ -385,7 +385,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
 class _PlayerErrorView extends StatelessWidget {
   final String message;
   final VoidCallback onRetry;
-
   const _PlayerErrorView({required this.message, required this.onRetry});
 
   @override
@@ -419,22 +418,24 @@ class _PlayerErrorView extends StatelessWidget {
   }
 }
 
-// ---------------- Settings Bottom Sheet Code below -----------------
 class _PlaybackSettingsSheet extends StatefulWidget {
   final Player player;
   final Tracks tracks;
   const _PlaybackSettingsSheet({required this.player, required this.tracks});
+
   @override
   State<_PlaybackSettingsSheet> createState() => _PlaybackSettingsSheetState();
 }
 
 class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
   late Tracks _tracks;
+
   @override
   void initState() {
     super.initState();
     _tracks = widget.tracks;
   }
+
   List<AudioTrack> get _audioTracks => _uniqueById<AudioTrack>(_tracks.audio.where((track) => track.id != 'no').toList());
   List<SubtitleTrack> get _subtitleTracks => _uniqueById<SubtitleTrack>(_tracks.subtitle);
   List<VideoTrack> get _videoTracks => _uniqueById<VideoTrack>(_tracks.video.where((track) => track.id != 'no').toList());
@@ -482,28 +483,48 @@ class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
           children: [
             const Text('Playback Settings', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700)),
             const SizedBox(height: 24),
+            
             const _SettingsHeading(icon: Icons.language_rounded, title: 'Audio & Language'),
             if (_audioTracks.isEmpty) const _EmptyTrackMessage(message: 'No alternate audio track found.')
             else ..._audioTracks.map((track) => RadioListTile<String>(
-              value: track.id, groupValue: selected.audio.id, activeColor: const Color(0xFFE50914),
+              value: track.id, 
+              groupValue: selected.audio.id, 
+              activeColor: const Color(0xFFE50914),
               title: Text(_audioLabel(track), style: const TextStyle(color: Colors.white)),
-              onChanged: (_) async { await widget.player.setAudioTrack(track); if (mounted) setState(() {}); },
+              onChanged: (val) async { 
+                await widget.player.setAudioTrack(track); 
+                if (mounted) setState(() {}); 
+              },
             )),
+            
             const Divider(color: Colors.white12, height: 32),
+            
             const _SettingsHeading(icon: Icons.subtitles_rounded, title: 'Subtitles'),
             if (_subtitleTracks.isEmpty) const _EmptyTrackMessage(message: 'No subtitle track found.')
             else ..._subtitleTracks.map((track) => RadioListTile<String>(
-              value: track.id, groupValue: selected.subtitle.id, activeColor: const Color(0xFFE50914),
+              value: track.id, 
+              groupValue: selected.subtitle.id, 
+              activeColor: const Color(0xFFE50914),
               title: Text(_subtitleLabel(track), style: const TextStyle(color: Colors.white)),
-              onChanged: (_) async { await widget.player.setSubtitleTrack(track); if (mounted) setState(() {}); },
+              onChanged: (val) async { 
+                await widget.player.setSubtitleTrack(track); 
+                if (mounted) setState(() {}); 
+              },
             )),
+            
             const Divider(color: Colors.white12, height: 32),
+            
             const _SettingsHeading(icon: Icons.high_quality_rounded, title: 'Video Quality'),
             if (_videoTracks.isEmpty) const _EmptyTrackMessage(message: 'Adaptive quality is controlled automatically.')
             else ..._videoTracks.map((track) => RadioListTile<String>(
-              value: track.id, groupValue: selected.video.id, activeColor: const Color(0xFFE50914),
+              value: track.id, 
+              groupValue: selected.video.id, 
+              activeColor: const Color(0xFFE50914),
               title: Text(_videoLabel(track), style: const TextStyle(color: Colors.white)),
-              onChanged: (_) async { await widget.player.setVideoTrack(track); if (mounted) setState(() {}); },
+              onChanged: (val) async { 
+                await widget.player.setVideoTrack(track); 
+                if (mounted) setState(() {}); 
+              },
             )),
           ],
         ),
@@ -513,7 +534,8 @@ class _PlaybackSettingsSheetState extends State<_PlaybackSettingsSheet> {
 }
 
 class _SettingsHeading extends StatelessWidget {
-  final IconData icon; final String title;
+  final IconData icon; 
+  final String title;
   const _SettingsHeading({required this.icon, required this.title});
   @override
   Widget build(BuildContext context) {
