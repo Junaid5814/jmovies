@@ -1,427 +1,505 @@
+import 'dart:async';
+import 'dart:collection'; // Is se UnmodifiableListView ka error khatam hoga
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_svg/flutter_svg.dart';
-import '../../core/theme/app_theme.dart';
-import '../../data/models/media_item.dart';
-import '../../providers/movie_providers.dart';
-import '../../widgets/media_carousel.dart';
-import '../../widgets/media_section_row.dart';
-import '../../widgets/top_10_row.dart';
-import '../search/search_screen.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
-class HomeScreen extends ConsumerWidget {
-  const HomeScreen({super.key});
+class PlayerScreen extends StatefulWidget {
+  final dynamic movie;
+  final dynamic show;
+  final dynamic episode;
+  final dynamic mediaItem;
+  final int? tmdbId;
+  final int? id;
+  final String? title;
+  final String? name;
+  final bool isTv;
+  final int? seasonNumber;
+  final int? episodeNumber;
+  final bool isAnime;
+
+  const PlayerScreen({
+    super.key,
+    this.movie,
+    this.show,
+    this.episode,
+    this.mediaItem,
+    this.tmdbId,
+    this.id,
+    this.title,
+    this.name,
+    this.isTv = false,
+    this.seasonNumber,
+    this.episodeNumber,
+    this.isAnime = false,
+  });
+
+  // 👇 Yahan se details_screen ka error theek hoga 👇
+  const PlayerScreen.forMovie(
+    this.movie, {
+    super.key,
+    this.show,
+    this.episode,
+    this.mediaItem,
+    this.tmdbId,
+    this.id,
+    this.title,
+    this.name,
+    this.isTv = false,
+    this.seasonNumber,
+    this.episodeNumber,
+    this.isAnime = false,
+  });
+
+  const PlayerScreen.forEpisode({
+    super.key,
+    this.show,
+    this.episode,
+    this.movie,
+    this.mediaItem,
+    this.tmdbId,
+    this.id,
+    this.title,
+    this.name,
+    this.isTv = true,
+    this.seasonNumber,
+    this.episodeNumber,
+    this.isAnime = false,
+  });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final mode = ref.watch(homeModeProvider);
+  State<PlayerScreen> createState() => _PlayerScreenState();
+}
 
-    return Scaffold(
-      backgroundColor: AppColors.pureBlack,
-      body: SafeArea(
-        child: Column(
-          children: [
-            _buildHeader(context),
-            const SizedBox(height: 14),
-            const _ModePillSwitcher(),
-            const SizedBox(height: 4),
-            Expanded(
-              child: IndexedStack(
-                index: mode.index,
-                children: const [
-                  _MoviesFeed(),
-                  _SeriesFeed(),
-                  _AnimeFeed(),
+class _PlayerScreenState extends State<PlayerScreen> {
+  InAppWebViewController? _webViewController;
+  bool _isLoading = true;
+  bool _hasError = false;
+  
+  // Custom Player States
+  bool _isPlaying = false;
+  bool _showControls = true;
+  bool _isFullScreen = false;
+  double _currentPosition = 0;
+  double _totalDuration = 1; 
+  
+  Timer? _controlsTimer;
+  Timer? _syncTimer;
+  int _currentServerIndex = 0;
+
+  // Servers List (Fail-Proof)
+  List<Map<String, String>> get _servers {
+    final id = _resolvedId;
+    final s = widget.seasonNumber ?? 1;
+    final e = widget.episodeNumber ?? 1;
+    final isTv = widget.isTv || widget.show != null || widget.episode != null;
+
+    if (isTv) {
+      return [
+        {'name': 'VidSrc (Fast)', 'url': 'https://vidsrc.cc/v2/embed/tv/$id/$s/$e'},
+        {'name': 'MultiEmbed', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1&s=$s&e=$e'},
+        {'name': 'AutoEmbed', 'url': 'https://autoembed.co/tv/tmdb/$id-$s-$e'},
+      ];
+    } else {
+      return [
+        {'name': 'VidSrc (Fast)', 'url': 'https://vidsrc.cc/v2/embed/movie/$id'},
+        {'name': 'MultiEmbed', 'url': 'https://multiembed.mov/?video_id=$id&tmdb=1'},
+        {'name': 'AutoEmbed', 'url': 'https://autoembed.co/movie/tmdb/$id'},
+      ];
+    }
+  }
+
+  // Smart ID Resolver
+  int get _resolvedId {
+    if (widget.tmdbId != null && widget.tmdbId! > 0) return widget.tmdbId!;
+    if (widget.id != null && widget.id! > 0) return widget.id!;
+    for (var obj in [widget.movie, widget.show, widget.mediaItem]) {
+      if (obj != null) {
+        if (obj is Map && obj['id'] != null) return int.tryParse(obj['id'].toString()) ?? 0;
+        try {
+          return int.tryParse(obj.id.toString()) ?? 0;
+        } catch (_) {}
+      }
+    }
+    return 0;
+  }
+
+  String get _resolvedTitle {
+    return widget.title ?? widget.name ?? 'Now Playing';
+  }
+
+  // THE MAGIC: JS Script to hide controls across all iframes
+  final String _injectionJS = """
+    function hideAllControls() {
+      let style = document.createElement('style');
+      style.innerHTML = `
+        *::-webkit-media-controls-panel { display: none !important; opacity: 0 !important; }
+        *::-webkit-media-controls-play-button { display: none !important; }
+        *::-webkit-media-controls { display: none !important; }
+        .plyr__controls { display: none !important; }
+        .jw-controls { display: none !important; }
+        .vjs-control-bar { display: none !important; }
+      `;
+      document.head.appendChild(style);
+      
+      let videos = document.getElementsByTagName('video');
+      for(let i=0; i<videos.length; i++){
+        videos[i].controls = false;
+        videos[i].removeAttribute('controls');
+        videos[i].style.pointerEvents = 'none'; 
+      }
+    }
+    hideAllControls();
+    setTimeout(hideAllControls, 1000);
+    setTimeout(hideAllControls, 3000);
+  """;
+
+  @override
+  void initState() {
+    super.initState();
+    WakelockPlus.enable();
+    _startControlsTimer();
+  }
+
+  @override
+  void dispose() {
+    _controlsTimer?.cancel();
+    _syncTimer?.cancel();
+    WakelockPlus.disable();
+    _exitFullScreen();
+    super.dispose();
+  }
+  
+  void _startSyncEngine() {
+    _syncTimer?.cancel();
+    _syncTimer = Timer.periodic(const Duration(milliseconds: 1000), (timer) async {
+      if (_webViewController != null) {
+        final timeRes = await _webViewController!.evaluateJavascript(
+            source: "try { document.querySelector('video').currentTime; } catch(e) { 0; }");
+        final durRes = await _webViewController!.evaluateJavascript(
+            source: "try { document.querySelector('video').duration; } catch(e) { 0; }");
+        final pausedRes = await _webViewController!.evaluateJavascript(
+            source: "try { document.querySelector('video').paused; } catch(e) { true; }");
+
+        if (mounted) {
+          setState(() {
+            if (timeRes != null && timeRes is num) _currentPosition = timeRes.toDouble();
+            if (durRes != null && durRes is num && durRes > 0) _totalDuration = durRes.toDouble();
+            if (pausedRes != null && pausedRes is bool) _isPlaying = !pausedRes;
+          });
+        }
+      }
+    });
+  }
+
+  void _togglePlayPause() {
+    if (_webViewController != null) {
+      if (_isPlaying) {
+        _webViewController!.evaluateJavascript(source: "try { document.querySelector('video').pause(); } catch(e) {}");
+      } else {
+        _webViewController!.evaluateJavascript(source: "try { document.querySelector('video').play(); } catch(e) {}");
+      }
+      setState(() => _isPlaying = !_isPlaying);
+      _startControlsTimer();
+    }
+  }
+
+  void _seekTo(double seconds) {
+    if (_webViewController != null) {
+      _webViewController!.evaluateJavascript(
+          source: "try { document.querySelector('video').currentTime = $seconds; } catch(e) {}");
+      setState(() => _currentPosition = seconds);
+      _startControlsTimer();
+    }
+  }
+
+  void _seekRelative(double seconds) {
+    _seekTo((_currentPosition + seconds).clamp(0.0, _totalDuration));
+  }
+
+  void _startControlsTimer() {
+    _controlsTimer?.cancel();
+    _controlsTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted && _isPlaying) {
+        setState(() => _showControls = false);
+      }
+    });
+  }
+
+  void _toggleControls() {
+    setState(() => _showControls = !_showControls);
+    if (_showControls) _startControlsTimer();
+  }
+
+  void _enterFullScreen() {
+    setState(() => _isFullScreen = true);
+    SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  }
+
+  void _exitFullScreen() {
+    setState(() => _isFullScreen = false);
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  }
+
+  String _formatTime(double seconds) {
+    final d = Duration(seconds: seconds.toInt());
+    final min = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final sec = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return d.inHours > 0 ? '${d.inHours}:$min:$sec' : '$min:$sec';
+  }
+
+  void _switchServer(int index) {
+    setState(() {
+      _currentServerIndex = index;
+      _isLoading = true;
+      _hasError = false;
+    });
+    _webViewController?.loadUrl(urlRequest: URLRequest(url: WebUri(_servers[index]['url']!)));
+    Navigator.pop(context); 
+  }
+
+  void _showServerPicker() {
+    _controlsTimer?.cancel();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF161616),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Select Stream Server', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              ...List.generate(_servers.length, (i) {
+                final isCurrent = i == _currentServerIndex;
+                return ListTile(
+                  leading: Icon(Icons.dns_rounded, color: isCurrent ? Colors.redAccent : Colors.white54),
+                  title: Text(_servers[i]['name']!, style: TextStyle(color: isCurrent ? Colors.redAccent : Colors.white)),
+                  trailing: isCurrent ? const Icon(Icons.check_circle, color: Colors.redAccent) : null,
+                  onTap: () => _switchServer(i),
+                );
+              }),
+            ],
+          ),
+        );
+      },
+    ).then((_) => _startControlsTimer());
+  }
+
+  Widget _buildWebView() {
+    return Stack(
+      children: [
+        InAppWebView(
+          initialUrlRequest: URLRequest(url: WebUri(_servers[_currentServerIndex]['url']!)),
+          initialSettings: InAppWebViewSettings(
+            mediaPlaybackRequiresUserGesture: false,
+            allowsInlineMediaPlayback: true,
+            iframeAllowFullscreen: true,
+            transparentBackground: true,
+            supportZoom: false,
+            disableContextMenu: true,
+          ),
+          initialUserScripts: UnmodifiableListView<UserScript>([
+            UserScript(
+              source: _injectionJS,
+              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_END,
+              forMainFrameOnly: false, 
+            )
+          ]),
+          onWebViewCreated: (controller) {
+            _webViewController = controller;
+          },
+          onLoadStop: (controller, url) {
+            if (mounted) setState(() => _isLoading = false);
+            controller.evaluateJavascript(source: _injectionJS);
+            _startSyncEngine();
+          },
+          onReceivedError: (controller, req, error) {
+            if (mounted) setState(() => _hasError = true);
+          },
+        ),
+
+        if (_isLoading)
+          const Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(color: Colors.redAccent),
+                SizedBox(height: 12),
+                Text("Bypassing Server Security...", style: TextStyle(color: Colors.white70, fontSize: 12)),
+              ],
+            ),
+          ),
+
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _toggleControls,
+          onDoubleTap: () => _toggleControls(),
+        ),
+
+        if (_showControls && !_isLoading)
+          AnimatedOpacity(
+            opacity: _showControls ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 250),
+            child: Container(
+              color: Colors.black.withOpacity(0.5),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    child: Row(
+                      children: [
+                        InkWell(
+                          onTap: () => _isFullScreen ? _exitFullScreen() : Navigator.pop(context),
+                          child: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            "$_resolvedTitle${widget.isTv ? '(S${widget.seasonNumber} E${widget.episodeNumber})' : ''}",
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                            maxLines: 1, overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.settings_applications, color: Colors.white),
+                          onPressed: _showServerPicker, // 👇 Error fixed here (onPressed) 👇
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton(
+                        iconSize: 40,
+                        icon: const Icon(Icons.replay_10_rounded, color: Colors.white),
+                        onPressed: () => _seekRelative(-10),
+                      ),
+                      const SizedBox(width: 24),
+                      IconButton(
+                        iconSize: 64,
+                        icon: Icon(_isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled, color: Colors.redAccent),
+                        onPressed: _togglePlayPause,
+                      ),
+                      const SizedBox(width: 24),
+                      IconButton(
+                        iconSize: 40,
+                        icon: const Icon(Icons.forward_10_rounded, color: Colors.white),
+                        onPressed: () => _seekRelative(10),
+                      ),
+                    ],
+                  ),
+
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    child: Row(
+                      children: [
+                        Text(_formatTime(_currentPosition), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                        Expanded(
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              activeTrackColor: Colors.redAccent,
+                              thumbColor: Colors.redAccent,
+                              trackHeight: 3,
+                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                            ),
+                            child: Slider(
+                              min: 0,
+                              max: _totalDuration,
+                              value: _currentPosition.clamp(0, _totalDuration),
+                              onChangeStart: (_) => _syncTimer?.cancel(),
+                              onChanged: (val) => setState(() => _currentPosition = val),
+                              onChangeEnd: (val) {
+                                _seekTo(val);
+                                _startSyncEngine();
+                              },
+                            ),
+                          ),
+                        ),
+                        Text(_formatTime(_totalDuration), style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                        const SizedBox(width: 12),
+                        InkWell(
+                          onTap: _isFullScreen ? _exitFullScreen : _enterFullScreen,
+                          child: Icon(_isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen, color: Colors.white),
+                        )
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
-          ],
-        ),
-      ),
+          ),
+      ],
     );
   }
-
-  Widget _buildHeader(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            children: [
-              SvgPicture.asset('assets/icons/jmovies_logo.svg', height: 30),
-              const SizedBox(width: 10),
-              Text('Jmovies',
-                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontSize: 22)),
-            ],
-          ),
-          IconButton(
-            icon: const Icon(Icons.search_rounded, color: Colors.white, size: 26),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SearchScreen()),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Top 3-mode pill switcher: Movies / Series & Dramas / Anime.
-/// Switching modes only updates [homeModeProvider] — the [IndexedStack]
-/// above keeps all three feeds alive, so changing tabs never reloads the
-/// scaffold or re-fetches data that's already loaded.
-class _ModePillSwitcher extends ConsumerWidget {
-  const _ModePillSwitcher();
-
-  static const _pills = [
-    (mode: HomeMode.movies, label: '🎬 Movies'),
-    (mode: HomeMode.series, label: '📺 Series & Dramas'),
-    (mode: HomeMode.anime, label: '⚡ Anime'),
-  ];
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final mode = ref.watch(homeModeProvider);
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Row(
-        children: _pills.map((pill) {
-          final isActive = mode == pill.mode;
-          return Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: GestureDetector(
-                onTap: () => ref.read(homeModeProvider.notifier).state = pill.mode,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 250),
-                  curve: Curves.easeOutCubic,
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  decoration: BoxDecoration(
-                    color: isActive ? AppColors.crimson : AppColors.charcoalElevated,
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: isActive
-                        ? [
-                            BoxShadow(
-                              color: AppColors.crimson.withOpacity(0.4),
-                              blurRadius: 12,
-                              offset: const Offset(0, 4),
-                            ),
-                          ]
-                        : null,
-                  ),
-                  child: AnimatedDefaultTextStyle(
-                    duration: const Duration(milliseconds: 250),
-                    style: TextStyle(
-                      color: isActive ? Colors.white : AppColors.textSecondary,
-                      fontWeight: isActive ? FontWeight.w700 : FontWeight.w400,
-                      fontSize: 12,
-                    ),
-                    child: Text(
-                      pill.label,
-                      textAlign: TextAlign.center,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          );
-        }).toList(),
-      ),
-    );
-  }
-}
-
-// =========================================================================
-// Movies tab: Now in Cinemas, Top 10 Movies Today, Bollywood Blockbusters,
-// Hollywood Action Hits.
-// =========================================================================
-
-class _MoviesFeed extends ConsumerWidget {
-  const _MoviesFeed();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final hero = ref.watch(moviesHeroProvider);
-    final nowPlaying = ref.watch(nowPlayingInCinemaProvider);
-    final top10 = ref.watch(top10MoviesTodayProvider);
-    final bollywood = ref.watch(bollywoodHitsProvider);
-    final action = ref.watch(hollywoodActionHitsProvider);
-
-    return RefreshIndicator(
-      color: AppColors.crimson,
-      backgroundColor: AppColors.charcoal,
-      onRefresh: () async {
-        ref.invalidate(moviesHeroProvider);
-        ref.invalidate(nowPlayingInCinemaProvider);
-        ref.invalidate(top10MoviesTodayProvider);
-        ref.invalidate(bollywoodHitsProvider);
-        ref.invalidate(hollywoodActionHitsProvider);
-      },
-      child: CustomScrollView(
-        slivers: [
-          SliverToBoxAdapter(
-            child: hero.when(
-              data: (items) => MediaHeroCarousel(items: items),
-              loading: () => const SizedBox(
-                height: 460,
-                child: Center(child: CircularProgressIndicator(color: AppColors.crimson)),
-              ),
-              error: (e, _) => _ErrorBanner(message: e.toString()),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: nowPlaying.when(
-              data: (movies) => MediaSectionRow(
-                title: 'Now in Cinemas',
-                items: MediaItem.fromMovies(movies),
-              ),
-              loading: () => const MediaSectionRow(title: 'Now in Cinemas', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: top10.when(
-              data: (movies) =>
-                  Top10Row(title: 'Top 10 Movies Today', items: MediaItem.fromMovies(movies)),
-              loading: () => const Top10Row(title: 'Top 10 Movies Today', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: bollywood.when(
-              data: (movies) => MediaSectionRow(
-                title: 'Bollywood Blockbusters',
-                items: MediaItem.fromMovies(movies),
-                badge: 'Hindi',
-              ),
-              loading: () =>
-                  const MediaSectionRow(title: 'Bollywood Blockbusters', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: action.when(
-              data: (movies) => MediaSectionRow(
-                title: 'Hollywood Action Hits',
-                items: MediaItem.fromMovies(movies),
-              ),
-              loading: () =>
-                  const MediaSectionRow(title: 'Hollywood Action Hits', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          const SliverToBoxAdapter(child: SizedBox(height: 32)),
-        ],
-      ),
-    );
-  }
-}
-
-// =========================================================================
-// Series tab: Top 10 Global Series, Pakistani Dramas, Netflix Originals,
-// Turkish Dramas, Amazon Prime Video, K-Dramas, HBO Max, Hotstar.
-// =========================================================================
-
-class _SeriesFeed extends ConsumerWidget {
-  const _SeriesFeed();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final hero = ref.watch(seriesHeroProvider);
-    final top10 = ref.watch(top10SeriesTodayProvider);
-    final pakistani = ref.watch(pakistaniDramasProvider);
-    final netflix = ref.watch(netflixOriginalsProvider);
-    final turkish = ref.watch(turkishDramasProvider);
-    final prime = ref.watch(primeVideoProvider);
-    final kdrama = ref.watch(kDramaProvider);
-    final hboMax = ref.watch(hboMaxProvider);
-    final hotstar = ref.watch(disneyHotstarProvider);
-
-    return RefreshIndicator(
-      color: AppColors.crimson,
-      backgroundColor: AppColors.charcoal,
-      onRefresh: () async {
-        ref.invalidate(seriesHeroProvider);
-        ref.invalidate(top10SeriesTodayProvider);
-        ref.invalidate(pakistaniDramasProvider);
-        ref.invalidate(netflixOriginalsProvider);
-        ref.invalidate(turkishDramasProvider);
-        ref.invalidate(primeVideoProvider);
-        ref.invalidate(kDramaProvider);
-        ref.invalidate(hboMaxProvider);
-        ref.invalidate(disneyHotstarProvider);
-      },
-      child: CustomScrollView(
-        slivers: [
-          SliverToBoxAdapter(
-            child: hero.when(
-              data: (items) => MediaHeroCarousel(items: items),
-              loading: () => const SizedBox(
-                height: 460,
-                child: Center(child: CircularProgressIndicator(color: AppColors.crimson)),
-              ),
-              error: (e, _) => _ErrorBanner(message: e.toString()),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: top10.when(
-              data: (shows) =>
-                  Top10Row(title: 'Top 10 Global Series', items: MediaItem.fromTvShows(shows)),
-              loading: () => const Top10Row(title: 'Top 10 Global Series', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: pakistani.when(
-              data: (shows) => MediaSectionRow(
-                title: 'Pakistani Dramas',
-                items: MediaItem.fromTvShows(shows),
-                badge: 'Urdu',
-              ),
-              loading: () => const MediaSectionRow(title: 'Pakistani Dramas', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: netflix.when(
-              data: (shows) => MediaSectionRow(
-                title: 'Netflix Originals',
-                items: MediaItem.fromTvShows(shows),
-                badge: 'N',
-                badgeColor: Colors.red.shade900,
-              ),
-              loading: () => const MediaSectionRow(title: 'Netflix Originals', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: turkish.when(
-              data: (shows) => MediaSectionRow(
-                title: 'Turkish Dramas',
-                items: MediaItem.fromTvShows(shows),
-              ),
-              loading: () => const MediaSectionRow(title: 'Turkish Dramas', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: prime.when(
-              data: (shows) => MediaSectionRow(
-                title: 'Amazon Prime Video',
-                items: MediaItem.fromTvShows(shows),
-                badge: 'Prime',
-                badgeColor: const Color(0xFF00A8E1),
-              ),
-              loading: () =>
-                  const MediaSectionRow(title: 'Amazon Prime Video', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: kdrama.when(
-              data: (shows) => MediaSectionRow(title: 'K-Dramas', items: MediaItem.fromTvShows(shows)),
-              loading: () => const MediaSectionRow(title: 'K-Dramas', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: hboMax.when(
-              data: (shows) => MediaSectionRow(title: 'HBO Max', items: MediaItem.fromTvShows(shows)),
-              loading: () => const MediaSectionRow(title: 'HBO Max', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: hotstar.when(
-              data: (shows) => MediaSectionRow(title: 'Hotstar', items: MediaItem.fromTvShows(shows)),
-              loading: () => const MediaSectionRow(title: 'Hotstar', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          const SliverToBoxAdapter(child: SizedBox(height: 32)),
-        ],
-      ),
-    );
-  }
-}
-
-// =========================================================================
-// Anime tab: Trending Anime This Season, Top Anime Movies.
-// =========================================================================
-
-class _AnimeFeed extends ConsumerWidget {
-  const _AnimeFeed();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final hero = ref.watch(animeHeroProvider);
-    final trendingAnime = ref.watch(trendingAnimeProvider);
-    final animeMovies = ref.watch(animeMoviesProvider);
-
-    return RefreshIndicator(
-      color: AppColors.crimson,
-      backgroundColor: AppColors.charcoal,
-      onRefresh: () async {
-        ref.invalidate(animeHeroProvider);
-        ref.invalidate(trendingAnimeProvider);
-        ref.invalidate(animeMoviesProvider);
-      },
-      child: CustomScrollView(
-        slivers: [
-          SliverToBoxAdapter(
-            child: hero.when(
-              data: (items) => MediaHeroCarousel(items: items),
-              loading: () => const SizedBox(
-                height: 460,
-                child: Center(child: CircularProgressIndicator(color: AppColors.crimson)),
-              ),
-              error: (e, _) => _ErrorBanner(message: e.toString()),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: trendingAnime.when(
-              data: (shows) => MediaSectionRow(
-                title: 'Trending Anime This Season',
-                items: MediaItem.fromTvShows(shows),
-                badge: 'Viral',
-                badgeColor: Colors.deepPurple,
-              ),
-              loading: () =>
-                  const MediaSectionRow(title: 'Trending Anime This Season', items: [], isLoading: true),
-              error: (e, _) => _ErrorBanner(message: e.toString()),
-            ),
-          ),
-          SliverToBoxAdapter(
-            child: animeMovies.when(
-              data: (movies) =>
-                  MediaSectionRow(title: 'Top Anime Movies', items: MediaItem.fromMovies(movies)),
-              loading: () => const MediaSectionRow(title: 'Top Anime Movies', items: [], isLoading: true),
-              error: (_, __) => const SizedBox.shrink(),
-            ),
-          ),
-          const SliverToBoxAdapter(child: SizedBox(height: 32)),
-        ],
-      ),
-    );
-  }
-}
-
-class _ErrorBanner extends StatelessWidget {
-  final String message;
-  const _ErrorBanner({required this.message});
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Text(
-        'Could not load content.\n$message',
-        style: const TextStyle(color: AppColors.textSecondary),
+    if (_isFullScreen) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(child: _buildWebView()),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F0F0F),
+      body: SafeArea(
+        child: Column(
+          children: [
+            AspectRatio(
+              aspectRatio: 16 / 9,
+              child: _buildWebView(),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(_resolvedTitle, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    Text(
+                      widget.isTv ? 'Season ${widget.seasonNumber} • Episode ${widget.episodeNumber}' : 'Full Movie',
+                      style: const TextStyle(color: Colors.white54, fontSize: 14),
+                    ),
+                    const SizedBox(height: 24),
+                    const Text("Active Server", style: TextStyle(color: Colors.white70, fontSize: 12)),
+                    const SizedBox(height: 8),
+                    InkWell(
+                      onTap: _showServerPicker,
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.05),
+                          border: Border.all(color: Colors.white12),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.dns_rounded, color: Colors.redAccent),
+                            const SizedBox(width: 12),
+                            Expanded(child: Text(_servers[_currentServerIndex]['name']!, style: const TextStyle(color: Colors.white))),
+                            const Icon(Icons.swap_horiz, color: Colors.white54),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          ],
+        ),
       ),
     );
   }
